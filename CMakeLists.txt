@@ -12,4 +12,8 @@ set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/glfw)
 
 add_executable(ToyEngine src/main.cpp)
-target_link_libraries(ToyEngine PRIVATE glfw)
+target_link_libraries(ToyEngine PRIVATE glfw opengl32)
+
+if (MSVC)
+    target_compile_options(ToyEngine PRIVATE /EHsc)
+endif()
