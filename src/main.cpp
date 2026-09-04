@@ -16,27 +16,37 @@ const int HEIGHT = 600;
 struct Vertex {
     Vec3 position;
     Vec3 color;
+    float u, v;
 };
 
-// Triangle A - closer to camera
-Vertex triangleA[3] = {
-    { {  0.0f,  0.5f, 0.0f }, { 1, 0, 0 } }, // red
-    { { -0.5f, -0.5f, 0.0f }, { 1, 0, 0 } },
-    { {  0.5f, -0.5f, 0.0f }, { 1, 0, 0 } },
+// A floor quad (two triangles) receding away from the camera into the distance.
+// UVs span 0-1 across the whole floor, so the checkerboard pattern makes warping obvious.
+Vertex floorQuad[6] = {
+    // Triangle 1
+    { { -1.0f, -0.5f, -0.5f }, {1,1,1}, 0.0f, 0.0f },
+    { { -1.0f, -0.5f, -5.0f }, {1,1,1}, 0.0f, 1.0f },
+    { {  1.0f, -0.5f, -5.0f }, {1,1,1}, 1.0f, 1.0f },
+    // Triangle 2
+    { { -1.0f, -0.5f, -0.5f }, {1,1,1}, 0.0f, 0.0f },
+    { {  1.0f, -0.5f, -5.0f }, {1,1,1}, 1.0f, 1.0f },
+    { {  1.0f, -0.5f, -0.5f }, {1,1,1}, 1.0f, 0.0f },
 };
 
-// Triangle B - further from camera, offset so it overlaps triangle A
-Vertex triangleB[3] = {
-    { {  0.3f,  0.3f, -1.0f }, { 0, 0, 1 } }, // blue, pushed back on Z
-    { { -0.2f, -0.7f, -1.0f }, { 0, 0, 1 } },
-    { {  0.8f, -0.7f, -1.0f }, { 0, 0, 1 } },
-};
+Vec3 sampleCheckerboard(float u, float v) {
+    int checkSize = 8;
+    int cx = (int)(u * checkSize);
+    int cy = (int)(v * checkSize);
+    bool isWhite = ((cx + cy) % 2) == 0;
+    return isWhite ? Vec3{1, 1, 1} : Vec3{0.1f, 0.1f, 0.1f};
+}
+
 
 void rasterizeTriangle(Vertex tri[3], const Mat4& mvp,
                         std::vector<uint32_t>& framebuffer,
                         std::vector<float>& depthBuffer,
-                        int width, int height) {
-    struct ScreenVertex { float x, y, depth; Vec3 color; };
+                        int width, int height,
+                        bool perspectiveCorrect = true) {
+    struct ScreenVertex { float x, y, depth, invW; Vec3 color; float u, v; };
     ScreenVertex sv[3];
 
     for (int i = 0; i < 3; i++) {
@@ -44,8 +54,11 @@ void rasterizeTriangle(Vertex tri[3], const Mat4& mvp,
         Vec3 ndc = { clip.x / clip.w, clip.y / clip.w, clip.z / clip.w };
         sv[i].x = (ndc.x * 0.5f + 0.5f) * width;
         sv[i].y = (1.0f - (ndc.y * 0.5f + 0.5f)) * height;
-        sv[i].depth = ndc.z; // NDC depth, roughly [-1, 1] -> we'll compare this directly
+        sv[i].depth = ndc.z;
+        sv[i].invW = 1.0f / clip.w;   // <-- key value for perspective correction
         sv[i].color = tri[i].color;
+        sv[i].u = tri[i].u;
+        sv[i].v = tri[i].v;
     }
 
     int minX = std::max(0, (int)std::floor(std::min({sv[0].x, sv[1].x, sv[2].x})));
@@ -57,9 +70,8 @@ void rasterizeTriangle(Vertex tri[3], const Mat4& mvp,
         return (px - ax) * (by - ay) - (py - ay) * (bx - ax);
     };
 
-    // Precompute the full-triangle area for barycentric normalization
     float area = edgeFunction(sv[0].x, sv[0].y, sv[1].x, sv[1].y, sv[2].x, sv[2].y);
-    if (std::fabs(area) < 1e-6f) return; // degenerate triangle, skip
+    if (std::fabs(area) < 1e-6f) return;
 
     for (int y = minY; y <= maxY; y++) {
         for (int x = minX; x <= maxX; x++) {
@@ -72,29 +84,55 @@ void rasterizeTriangle(Vertex tri[3], const Mat4& mvp,
             bool inside = (w0 >= 0 && w1 >= 0 && w2 >= 0) || (w0 <= 0 && w1 <= 0 && w2 <= 0);
             if (!inside) continue;
 
-            // Normalize edge weights into barycentric coordinates
+            // Screen-space barycentric weights (correct for interpolating already-projected
+            // quantities like screen position and NDC depth, but NOT for UV/color directly).
             float b0 = w0 / area;
             float b1 = w1 / area;
             float b2 = w2 / area;
 
-            // Interpolate depth
             float depth = b0 * sv[0].depth + b1 * sv[1].depth + b2 * sv[2].depth;
 
             int idx = y * width + x;
+            if (depth >= depthBuffer[idx]) continue;
 
-            // Depth test: smaller NDC z = closer to camera. Only draw if closer than what's there.
-            if (depth < depthBuffer[idx]) {
-                depthBuffer[idx] = depth;
+            float u, v;
+            Vec3 color;
 
-                Vec3 color = sv[0].color * b0 + sv[1].color * b1 + sv[2].color * b2;
-                uint8_t r = (uint8_t)(color.x * 255);
-                uint8_t g = (uint8_t)(color.y * 255);
-                uint8_t b = (uint8_t)(color.z * 255);
-                framebuffer[idx] = 0xFF000000 | (b << 16) | (g << 8) | r; // 0xAABBGGRR
+            if (perspectiveCorrect) {
+                // Perspective-correct interpolation:
+                // interpolate (attribute * invW) linearly in screen space, then divide
+                // by the interpolated invW itself.
+                float interpInvW = b0 * sv[0].invW + b1 * sv[1].invW + b2 * sv[2].invW;
+
+                float uOverW = b0 * (sv[0].u * sv[0].invW) + b1 * (sv[1].u * sv[1].invW) + b2 * (sv[2].u * sv[2].invW);
+                float vOverW = b0 * (sv[0].v * sv[0].invW) + b1 * (sv[1].v * sv[1].invW) + b2 * (sv[2].v * sv[2].invW);
+                u = uOverW / interpInvW;
+                v = vOverW / interpInvW;
+
+                Vec3 cOverW = (sv[0].color * sv[0].invW) * b0 + (sv[1].color * sv[1].invW) * b1 + (sv[2].color * sv[2].invW) * b2;
+                color = cOverW * (1.0f / interpInvW);
+            } else {
+                // Naive (incorrect) interpolation - straight barycentric average in screen space.
+                // Kept here deliberately so you can compare against perspectiveCorrect=true.
+                u = b0 * sv[0].u + b1 * sv[1].u + b2 * sv[2].u;
+                v = b0 * sv[0].v + b1 * sv[1].v + b2 * sv[2].v;
+                color = sv[0].color * b0 + sv[1].color * b1 + sv[2].color * b2;
             }
+
+            depthBuffer[idx] = depth;
+
+            Vec3 checker = sampleCheckerboard(u, v);
+            Vec3 finalColor = { color.x * checker.x, color.y * checker.y, color.z * checker.z };
+
+            uint8_t r = (uint8_t)(std::min(finalColor.x, 1.0f) * 255);
+            uint8_t g = (uint8_t)(std::min(finalColor.y, 1.0f) * 255);
+            uint8_t b = (uint8_t)(std::min(finalColor.z, 1.0f) * 255);
+            framebuffer[idx] = 0xFF000000 | (b << 16) | (g << 8) | r;
         }
     }
 }
+
+
 
 
 
@@ -125,30 +163,32 @@ int main() {
     std::vector<float> depthBuffer(WIDTH * HEIGHT);
 
     Mat4 model = Mat4::identity(); // no transform yet, triangle stays at origin
-    Mat4 view = Mat4::lookAt({0, 0, 3}, {0, 0, 0}, {0, 1, 0});
+    Mat4 view = Mat4::lookAt({0, 0.8f, 1.0f}, {0, -0.3f, -3.0f}, {0, 1, 0});
     Mat4 proj = Mat4::perspective(3.14159265f / 4.0f, (float)WIDTH / HEIGHT, 0.1f, 100.0f);
     Mat4 mvp = proj * view * model;
 
 
 
     while (!glfwWindowShouldClose(window)) {
-        glfwPollEvents();
+    glfwPollEvents();
 
-        // Clear color buffer
-        uint32_t clearColor = 0xFF302010;
-        std::fill(framebuffer.begin(), framebuffer.end(), clearColor);
+    std::fill(framebuffer.begin(), framebuffer.end(), 0xFF302010);
+    std::fill(depthBuffer.begin(), depthBuffer.end(), 1.0f);
 
-        // Clear depth buffer to the far plane (NDC z = 1.0 is "farthest")
-        std::fill(depthBuffer.begin(), depthBuffer.end(), 1.0f);
+    Vertex tri1[3] = { floorQuad[0], floorQuad[1], floorQuad[2] };
+    Vertex tri2[3] = { floorQuad[3], floorQuad[4], floorQuad[5] };
 
-        // Draw both triangles - order doesn't matter now, depth test handles it
-        rasterizeTriangle(triangleA, mvp, framebuffer, depthBuffer, WIDTH, HEIGHT);
-        rasterizeTriangle(triangleB, mvp, framebuffer, depthBuffer, WIDTH, HEIGHT);
+    rasterizeTriangle(tri1, mvp, framebuffer, depthBuffer, WIDTH, HEIGHT, true);
+    rasterizeTriangle(tri2, mvp, framebuffer, depthBuffer, WIDTH, HEIGHT, true);
 
-        glDrawPixels(WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, framebuffer.data());
-        glfwSwapBuffers(window);
-    }
+    glPixelZoom(1.0f, -1.0f);      // flip vertical draw direction
+    glRasterPos2f(-1.0f, 1.0f);    // start from the top-left corner of the window
+    glDrawPixels(WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, framebuffer.data());
+
     
+    glfwSwapBuffers(window);
+    }
+
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;
