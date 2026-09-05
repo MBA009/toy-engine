@@ -6,6 +6,7 @@
 #include <cmath>
 #include "math_tests.h"
 #include "math3d.h"
+#include "texture.h"
 
 
 const int WIDTH = 800;
@@ -45,6 +46,7 @@ void rasterizeTriangle(Vertex tri[3], const Mat4& mvp,
                         std::vector<uint32_t>& framebuffer,
                         std::vector<float>& depthBuffer,
                         int width, int height,
+                        const Texture& texture,
                         bool perspectiveCorrect = true) {
     struct ScreenVertex { float x, y, depth, invW; Vec3 color; float u, v; };
     ScreenVertex sv[3];
@@ -121,7 +123,7 @@ void rasterizeTriangle(Vertex tri[3], const Mat4& mvp,
 
             depthBuffer[idx] = depth;
 
-            Vec3 checker = sampleCheckerboard(u, v);
+            Vec3 checker = texture.sampleBilinear(u, v);
             Vec3 finalColor = { color.x * checker.x, color.y * checker.y, color.z * checker.z };
 
             uint8_t r = (uint8_t)(std::min(finalColor.x, 1.0f) * 255);
@@ -168,7 +170,10 @@ int main() {
     Mat4 mvp = proj * view * model;
 
 
-
+    Texture floorTexture;
+    if (!floorTexture.load("assets/floor.png")) {
+        return -1;
+    }
     while (!glfwWindowShouldClose(window)) {
     glfwPollEvents();
 
@@ -178,8 +183,8 @@ int main() {
     Vertex tri1[3] = { floorQuad[0], floorQuad[1], floorQuad[2] };
     Vertex tri2[3] = { floorQuad[3], floorQuad[4], floorQuad[5] };
 
-    rasterizeTriangle(tri1, mvp, framebuffer, depthBuffer, WIDTH, HEIGHT, true);
-    rasterizeTriangle(tri2, mvp, framebuffer, depthBuffer, WIDTH, HEIGHT, true);
+    rasterizeTriangle(tri1, mvp, framebuffer, depthBuffer, WIDTH, HEIGHT, floorTexture, true);
+    rasterizeTriangle(tri2, mvp, framebuffer, depthBuffer, WIDTH, HEIGHT, floorTexture, true);
 
     glPixelZoom(1.0f, -1.0f);      // flip vertical draw direction
     glRasterPos2f(-1.0f, 1.0f);    // start from the top-left corner of the window

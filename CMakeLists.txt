@@ -13,6 +13,7 @@ add_subdirectory(external/glfw)
 
 add_executable(ToyEngine src/main.cpp)
 target_link_libraries(ToyEngine PRIVATE glfw opengl32)
+target_include_directories(ToyEngine PRIVATE external/stb)
 
 if (MSVC)
     target_compile_options(ToyEngine PRIVATE /EHsc)
