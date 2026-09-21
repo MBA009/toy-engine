@@ -90,7 +90,3 @@ cmake --build build
 ## Demo
 
 *(A short demo video will be linked here once Phase 9 is complete.)*
-
-## License
-
-*(Add a license, e.g. MIT, once you're ready to make the repo public.)*
