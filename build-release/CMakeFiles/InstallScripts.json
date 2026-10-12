@@ -1,0 +1,9 @@
+{
+	"InstallScripts" : 
+	[
+		"C:/Users/bilal/Desktop/GP/build-release/cmake_install.cmake",
+		"C:/Users/bilal/Desktop/GP/build-release/external/glfw/cmake_install.cmake",
+		"C:/Users/bilal/Desktop/GP/build-release/external/glfw/src/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

@@ -4,9 +4,12 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include "math_tests.h"
 #include "math3d.h"
 #include "texture.h"
+#include "bench_scene.h"
 
 
 const int WIDTH = 800;
@@ -138,7 +141,7 @@ void rasterizeTriangle(Vertex tri[3], const Mat4& mvp, const Mat4& model,
         sv[i].depth = ndc.z;
         sv[i].invW = 1.0f / clip.w;
         sv[i].color = tri[i].color;
-        sv[i].normal = tri[i].normal;
+        sv[i].normal = (model * Vec4(tri[i].normal, 0.0f)).xyz(); // w = 0: rotate, don't translate
         sv[i].worldPos = worldPos4.xyz();
         sv[i].u = tri[i].u;
         sv[i].v = tri[i].v;
@@ -228,9 +231,11 @@ void rasterizeTriangle(Vertex tri[3], const Mat4& mvp, const Mat4& model,
 
 
 
-int main() {
+int main(int argc, char** argv) {
 
-    // runMathTests();
+    // runMathTests(); // asserts are compiled out in Release builds, so leave this off for benchmarking
+
+    bool bench = (argc > 1 && std::strcmp(argv[1], "--bench") == 0);
 
     Texture whiteTexture = Texture::solidWhite();
 
@@ -249,15 +254,14 @@ int main() {
     }
 
     glfwMakeContextCurrent(window);
+    glfwSwapInterval(bench ? 0 : 1); // vsync off while benchmarking, otherwise results cap at the refresh rate
 
     // Our CPU-side framebuffer: one uint32_t per pixel, packed as 0xAABBGGRR
     std::vector<uint32_t> framebuffer(WIDTH * HEIGHT);
     std::vector<float> depthBuffer(WIDTH * HEIGHT);
 
-    Mat4 model = Mat4::identity(); // no transform yet, triangle stays at origin
     Mat4 view = Mat4::lookAt({0, 0.8f, 1.0f}, {0, -0.3f, -3.0f}, {0, 1, 0});
     Mat4 proj = Mat4::perspective(3.14159265f / 4.0f, (float)WIDTH / HEIGHT, 0.1f, 100.0f);
-    Mat4 mvp = proj * view * model;
     Mat4 cubeBasePosition = Mat4::translate({0.0f, 0.0f, -1.5f});
 
 
@@ -265,37 +269,71 @@ int main() {
     if (!floorTexture.load("assets/floor.png")) {
         return -1;
     }
+
+    // Benchmark state
+    int cubeCount = bench ? BENCH_COUNTS[0] : 1;
+    int benchStage = 0, stageFrames = 0;
+    bool measuring = false;
+    double stageStart = glfwGetTime(), measureStart = 0.0;
+    double renderMsSum = 0.0; // time spent rasterizing only, excluding the blit/swap
+    if (bench) printf("cubes,triangles,frame_ms,fps,render_ms\n");
+
     while (!glfwWindowShouldClose(window)) {
-    glfwPollEvents();
+        glfwPollEvents();
 
-    float time = (float)glfwGetTime();
+        float time = (float)glfwGetTime();
+        double renderStart = glfwGetTime();
 
-    std::fill(framebuffer.begin(), framebuffer.end(), 0xFF302010);
-    std::fill(depthBuffer.begin(), depthBuffer.end(), 1.0f);
+        std::fill(framebuffer.begin(), framebuffer.end(), 0xFF302010);
+        std::fill(depthBuffer.begin(), depthBuffer.end(), 1.0f);
 
-    // Floor triangles, pulled from floorQuad
-    Vertex tri1[3] = { floorQuad[0], floorQuad[1], floorQuad[2] };
-    Vertex tri2[3] = { floorQuad[3], floorQuad[4], floorQuad[5] };
+        // Floor triangles, pulled from floorQuad
+        Vertex tri1[3] = { floorQuad[0], floorQuad[1], floorQuad[2] };
+        Vertex tri2[3] = { floorQuad[3], floorQuad[4], floorQuad[5] };
 
-    // Floor stays static
-    Mat4 floorModel = Mat4::identity();
-    Mat4 floorMvp = proj * view * floorModel;
-    rasterizeTriangle(tri1, floorMvp, floorModel, framebuffer, depthBuffer, WIDTH, HEIGHT, floorTexture, mainLight, cameraPos, true);
-    rasterizeTriangle(tri2, floorMvp, floorModel, framebuffer, depthBuffer, WIDTH, HEIGHT, floorTexture, mainLight, cameraPos, true);
+        // Floor stays static
+        Mat4 floorModel = Mat4::identity();
+        Mat4 floorMvp = proj * view * floorModel;
+        rasterizeTriangle(tri1, floorMvp, floorModel, framebuffer, depthBuffer, WIDTH, HEIGHT, floorTexture, mainLight, cameraPos, true);
+        rasterizeTriangle(tri2, floorMvp, floorModel, framebuffer, depthBuffer, WIDTH, HEIGHT, floorTexture, mainLight, cameraPos, true);
 
-    // Cube rotates continuously around Y, offset to sit on the floor
-    Mat4 cubeModel = cubeBasePosition * Mat4::rotateY(time);
-    Mat4 cubeMvp = proj * view * cubeModel;
+        // Cubes: one spinning cube normally, a grid of N cubes in benchmark mode
+        for (int c = 0; c < cubeCount; c++) {
+            Mat4 cubeModel = bench ? benchCubeModel(c, cubeCount, time)
+                                   : cubeBasePosition * Mat4::rotateY(time);
+            Mat4 cubeMvp = proj * view * cubeModel;
 
-    for (int i = 0; i < 12; i++) {
-        Vertex cubeTri[3] = { cube[i*3 + 0], cube[i*3 + 1], cube[i*3 + 2] };
-        rasterizeTriangle(cubeTri, cubeMvp, cubeModel, framebuffer, depthBuffer, WIDTH, HEIGHT, whiteTexture, mainLight, cameraPos, true);
-    }
+            for (int i = 0; i < 12; i++) {
+                Vertex cubeTri[3] = { cube[i*3 + 0], cube[i*3 + 1], cube[i*3 + 2] };
+                rasterizeTriangle(cubeTri, cubeMvp, cubeModel, framebuffer, depthBuffer, WIDTH, HEIGHT, whiteTexture, mainLight, cameraPos, true);
+            }
+        }
 
-    glPixelZoom(1.0f, -1.0f);
-    glRasterPos2f(-1.0f, 1.0f);
-    glDrawPixels(WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, framebuffer.data());
-    glfwSwapBuffers(window);
+        double renderMs = (glfwGetTime() - renderStart) * 1000.0; // clear + rasterize, before presenting
+
+        glPixelZoom(1.0f, -1.0f);
+        glRasterPos2f(-1.0f, 1.0f);
+        glDrawPixels(WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, framebuffer.data());
+        glfwSwapBuffers(window);
+
+        if (bench) {
+            double now = glfwGetTime();
+            if (!measuring) {
+                if (now - stageStart >= BENCH_WARMUP_SEC) { measuring = true; measureStart = now; stageFrames = 0; renderMsSum = 0.0; }
+            } else {
+                stageFrames++;
+                renderMsSum += renderMs;
+                if (now - measureStart >= BENCH_MEASURE_SEC) {
+                    double ms = (now - measureStart) / stageFrames * 1000.0;
+                    printf("%d,%d,%.3f,%.1f,%.3f\n", cubeCount, cubeCount * 12 + 2, ms, 1000.0 / ms,
+                           renderMsSum / stageFrames);
+                    if (++benchStage >= BENCH_STAGES) break;
+                    cubeCount = BENCH_COUNTS[benchStage];
+                    measuring = false;
+                    stageStart = now;
+                }
+            }
+        }
     }
 
     glfwDestroyWindow(window);

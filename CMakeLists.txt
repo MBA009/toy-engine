@@ -41,3 +41,21 @@ foreach(SHADER ${SHADER_SOURCES})
 endforeach()
 add_custom_target(Shaders DEPENDS ${SPV_FILES})
 add_dependencies(ToyEngineVk Shaders)
+
+add_executable(EcsBench src/ecs_bench.cpp)
+target_compile_features(EcsBench PRIVATE cxx_std_17)
+target_compile_options(EcsBench PRIVATE /EHsc /O2)
+
+
+# Dear ImGui as a small static library
+set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/external/imgui)
+add_library(imgui STATIC
+    ${IMGUI_DIR}/imgui.cpp
+    ${IMGUI_DIR}/imgui_draw.cpp
+    ${IMGUI_DIR}/imgui_tables.cpp
+    ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp)
+target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
+target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
+target_link_libraries(ToyEngineVk PRIVATE imgui)
