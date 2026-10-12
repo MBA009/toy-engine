@@ -85,7 +85,6 @@
 - Animate a rotation over time to prove your transform pipeline handles motion correctly
 
 **Milestone check:** A textured, lit, spinning cube rendered entirely on CPU.
-**Deliverable:** Short GIF/video + README section explaining each pipeline stage in your own words.
 
 ---
 

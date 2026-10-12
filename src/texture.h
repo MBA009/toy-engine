@@ -7,23 +7,30 @@
 #include <algorithm>
 
 struct Texture {
-    int width = 0;
-    int height = 0;
-    int channels = 0;
+    int width = 0, height = 0, channels = 0;
     unsigned char* data = nullptr;
+    bool ownsData = true;
 
     bool load(const std::string& path) {
         data = stbi_load(path.c_str(), &width, &height, &channels, 4);
-        if (!data) {
-            printf("Failed to load texture: %s\n", path.c_str());
-            return false;
-        }
+        ownsData = true;
+        if (!data) { printf("Failed to load texture: %s\n", path.c_str()); return false; }
         printf("Loaded texture %s (%dx%d)\n", path.c_str(), width, height);
         return true;
     }
 
+    static Texture solidWhite() {
+        static unsigned char whitePixel[4] = { 255, 255, 255, 255 };
+        Texture t;
+        t.data = whitePixel;
+        t.width = 1;
+        t.height = 1;
+        t.ownsData = false;
+        return t;
+    }
+
     ~Texture() {
-        if (data) stbi_image_free(data);
+        if (data && ownsData) stbi_image_free(data);
     }
 
     Vec3 sample(float u, float v) const {

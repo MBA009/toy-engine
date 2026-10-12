@@ -18,3 +18,12 @@ target_include_directories(ToyEngine PRIVATE external/stb)
 if (MSVC)
     target_compile_options(ToyEngine PRIVATE /EHsc)
 endif()
+
+find_package(Vulkan REQUIRED)
+
+add_executable(ToyEngineVk src/vk_main.cpp)
+target_link_libraries(ToyEngineVk PRIVATE glfw Vulkan::Vulkan)
+
+if (MSVC)
+    target_compile_options(ToyEngineVk PRIVATE /EHsc)
+endif()
