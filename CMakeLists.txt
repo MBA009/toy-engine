@@ -27,3 +27,17 @@ target_link_libraries(ToyEngineVk PRIVATE glfw Vulkan::Vulkan)
 if (MSVC)
     target_compile_options(ToyEngineVk PRIVATE /EHsc)
 endif()
+
+
+find_program(GLSLC glslc HINTS $ENV{VULKAN_SDK}/Bin)
+file(GLOB SHADER_SOURCES ${CMAKE_SOURCE_DIR}/shaders/*.vert ${CMAKE_SOURCE_DIR}/shaders/*.frag)
+foreach(SHADER ${SHADER_SOURCES})
+    get_filename_component(SHADER_NAME ${SHADER} NAME)
+    set(SPV ${CMAKE_SOURCE_DIR}/shaders/${SHADER_NAME}.spv)
+    add_custom_command(OUTPUT ${SPV}
+        COMMAND ${GLSLC} ${SHADER} -o ${SPV}
+        DEPENDS ${SHADER})
+    list(APPEND SPV_FILES ${SPV})
+endforeach()
+add_custom_target(Shaders DEPENDS ${SPV_FILES})
+add_dependencies(ToyEngineVk Shaders)
