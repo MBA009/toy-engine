@@ -36,22 +36,6 @@ Each phase below intentionally mirrors a layer of a real production engine (Unit
 
 Each layer is built directly on top of the one below it, and later phases (editor, AI) are wired into earlier ones (ECS, renderer) rather than existing as isolated systems.
 
-## Development roadmap
-
-| Phase | Focus | Status |
-|---|---|---|
-| 0 | Project setup, windowing (GLFW) | ✅ Done |
-| 1 | Software rasterizer (CPU rendering pipeline) | 🚧 In progress |
-| 2 | GPU renderer (Vulkan) | ⬜ Not started |
-| 3 | Data-oriented ECS + OOP benchmark comparison | ⬜ Not started |
-| 4 | Debug tooling foundation (ImGui overlay) | ⬜ Not started |
-| 5 | In-engine editor (picking, gizmos, inspector) | ⬜ Not started |
-| 6 | Asset pipeline (glTF import, hot-reload) | ⬜ Not started |
-| 7 | AI: navmesh pathfinding + behavior trees | ⬜ Not started |
-| 8 | Full integration pass | ⬜ Not started |
-| 9 | Portfolio packaging (demo video, docs) | ⬜ Not started |
-
-*(Update this table as phases are completed.)*
 
 ## Key technical decisions
 
