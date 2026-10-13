@@ -69,6 +69,10 @@ public:
         sparse_[e] = NONE;
     }
 
+    // Position of the entity's component in the dense array, or SIZE_MAX if it has none.
+    // (Dense order = the order systems and the editor's entity list iterate in.)
+    size_t indexOf(Entity e) const { return has(e) ? (size_t)sparse_[e] : (size_t)-1; }
+
     size_t size() const { return dense_.size(); }
     std::vector<T>&            data()           { return dense_; }
     const std::vector<Entity>& entities() const { return entities_; }
@@ -103,6 +107,8 @@ public:
 
     bool   alive(Entity e) const { return e < alive_.size() && alive_[e]; }
     size_t size() const { return alive_.size() - free_.size(); }
+    // One past the highest entity ID ever handed out: loop 0..idCapacity() and test alive() to visit every entity
+    size_t idCapacity() const { return alive_.size(); }
 
     // ---- components ----
     template <typename T>

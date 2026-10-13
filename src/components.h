@@ -46,6 +46,9 @@ struct DrawItem {
     uint32_t materialId;
 };
 
+// Set in DrawItem::materialId for the entity currently selected in the editor
+inline constexpr uint32_t DRAWFLAG_SELECTED = 1u << 31;
+
 // Closed form of translate(position) * rotateY(yaw) * scale(s), without the matrix multiplies.
 // (ecs_bench.cpp checks it against the composed version.)
 inline Mat4 modelMatrix(const Transform& t) {
@@ -58,4 +61,20 @@ inline Mat4 modelMatrix(const Transform& t) {
     m.m[3][1] = t.position.y;
     m.m[3][2] = t.position.z;
     return m;
+}
+
+// The inverse of modelMatrix(): read position, yaw and uniform scale back out of a model matrix
+// (what a gizmo hands back after a drag). Column 0 of modelMatrix is (cos*k, 0, -sin*k), so its
+// length is the scale and atan2 recovers the full -180..180 degree yaw (Euler decomposition
+// routines flip angles beyond +-90 degrees; this doesn't).
+inline Transform transformFromMatrix(const Mat4& m, const Transform& fallback = Transform{}) {
+    Transform t = fallback;
+    t.position = { m.m[3][0], m.m[3][1], m.m[3][2] };
+    float cx = m.m[0][0], cz = m.m[0][2];
+    float k = std::sqrt(cx * cx + cz * cz);
+    if (k > 1e-6f) {
+        t.scale = k;
+        t.yaw = std::atan2(-cz, cx);
+    }
+    return t;
 }

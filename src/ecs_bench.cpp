@@ -130,6 +130,17 @@ static void runTests() {
         Mat4 ref = Mat4::translate(t.position) * Mat4::rotateY(t.yaw) * Mat4::scale({ t.scale, t.scale, t.scale });
         CHECK(nearlyEqual(modelMatrix(t), ref));
     }
+    {   // transformFromMatrix undoes modelMatrix for any yaw, including beyond +-90 degrees
+        const float yaws[] = { -3.0f, -1.6f, -0.4f, 0.0f, 0.9f, 1.7f, 3.0f };
+        for (float yaw : yaws) {
+            Transform t; t.position = { 0.3f, -0.2f, -1.7f }; t.yaw = yaw; t.scale = 0.8f;
+            Transform b = transformFromMatrix(modelMatrix(t));
+            CHECK(std::fabs(b.yaw - yaw) < 1e-4f && std::fabs(b.scale - 0.8f) < 1e-5f);
+            CHECK(std::fabs(b.position.x - 0.3f) < 1e-6f && std::fabs(b.position.z + 1.7f) < 1e-6f);
+        }
+        Transform big; big.yaw = 7.0f;                       // beyond a full turn: comes back wrapped
+        CHECK(std::fabs(std::sin(transformFromMatrix(modelMatrix(big)).yaw) - std::sin(7.0f)) < 1e-4f);
+    }
     {   // add / has / get / remove
         Registry r;
         Entity a = r.create(), b = r.create(), c = r.create();
@@ -143,6 +154,10 @@ static void runTests() {
         CHECK(!r.has<Transform>(a));
         CHECK(r.get<Transform>(c).position.x == 3.0f && r.get<Transform>(b).position.x == 2.0f);
         CHECK(r.pool<Transform>().size() == 2);
+        // indexOf follows the swap-and-pop: c now sits where a used to be (slot 0), b is still slot 1
+        CHECK(r.pool<Transform>().indexOf(c) == 0 && r.pool<Transform>().indexOf(b) == 1);
+        CHECK(r.pool<Transform>().indexOf(a) == (size_t)-1);
+        CHECK(r.pool<Transform>().entities()[r.pool<Transform>().indexOf(c)] == c);
     }
     {   // each<> visits exactly the entities that have all listed components
         Registry r;

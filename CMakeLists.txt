@@ -59,3 +59,17 @@ add_library(imgui STATIC
 target_include_directories(imgui PUBLIC ${IMGUI_DIR} ${IMGUI_DIR}/backends)
 target_link_libraries(imgui PUBLIC glfw Vulkan::Vulkan)
 target_link_libraries(ToyEngineVk PRIVATE imgui)
+
+# ImGuizmo (3D transform gizmos), built into the imgui library
+set(IMGUIZMO_DIR ${CMAKE_SOURCE_DIR}/external/ImGuizmo/src)
+target_sources(imgui PRIVATE ${IMGUIZMO_DIR}/ImGuizmo.cpp)
+target_include_directories(imgui PUBLIC ${IMGUIZMO_DIR})
+
+target_sources(ToyEngineVk PRIVATE src/gltf_loader.cpp)
+target_include_directories(ToyEngineVk PRIVATE ${CMAKE_SOURCE_DIR}/external/cgltf)
+
+target_include_directories(ToyEngineVk PRIVATE ${CMAKE_SOURCE_DIR}/external/stb)
+
+target_include_directories(ToyEngineVk PRIVATE ${CMAKE_SOURCE_DIR}/external/json)
+
+target_compile_options(EcsBench PRIVATE $<$<CONFIG:Release>:/O2>)

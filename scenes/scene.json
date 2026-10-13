@@ -1,0 +1,113 @@
+{
+  "camera": {
+    "pitch": -0.42850006,
+    "position": [
+      -3.2108755,
+      1.0085803,
+      -0.4765706
+    ],
+    "yaw": 1.2884963
+  },
+  "entities": [
+    {
+      "mesh": {
+        "asset": "builtin:cube",
+        "material": 0
+      },
+      "name": "Spinner",
+      "spin": {
+        "speed": 1.0
+      },
+      "transform": {
+        "position": [
+          0.123783246,
+          0.29925713,
+          -1.5
+        ],
+        "scale": 0.9999998,
+        "yaw": 17.423525
+      }
+    },
+    {
+      "mesh": {
+        "asset": "builtin:cube",
+        "material": 0
+      },
+      "name": "Big Block",
+      "spin": {
+        "speed": 0.4
+      },
+      "transform": {
+        "position": [
+          0.7,
+          -0.15,
+          -3.0
+        ],
+        "scale": 0.7,
+        "yaw": 11.995965
+      }
+    },
+    {
+      "mesh": {
+        "asset": "assets/Duck.glb",
+        "material": 0
+      },
+      "name": "Duck 1",
+      "transform": {
+        "position": [
+          0.0,
+          1.3413991,
+          -1.8929071
+        ],
+        "scale": 1.0,
+        "yaw": -0.0
+      }
+    }
+  ],
+  "format": "toy-engine-scene",
+  "lights": {
+    "list": [
+      {
+        "color": [
+          1.0,
+          0.9,
+          0.75
+        ],
+        "intensity": 4.0,
+        "position": [
+          1.5,
+          1.5,
+          0.0
+        ]
+      },
+      {
+        "color": [
+          0.4,
+          0.6,
+          1.0
+        ],
+        "intensity": 3.0,
+        "position": [
+          -1.8,
+          1.0,
+          -2.5
+        ]
+      },
+      {
+        "color": [
+          1.0,
+          0.35,
+          0.3
+        ],
+        "intensity": 3.0,
+        "position": [
+          0.0,
+          0.7,
+          -1.5
+        ]
+      }
+    ],
+    "orbitLight2": true
+  },
+  "version": 1
+}

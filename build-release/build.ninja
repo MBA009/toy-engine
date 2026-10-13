@@ -93,7 +93,17 @@ build cmake_object_order_depends_target_ToyEngineVk: phony || Shaders cmake_obje
 build CMakeFiles\ToyEngineVk.dir\src\vk_main.cpp.obj: CXX_COMPILER__ToyEngineVk_unscanned_Release C$:\Users\bilal\Desktop\GP\src\vk_main.cpp || cmake_object_order_depends_target_ToyEngineVk
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD /EHsc
-  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\glfw\include -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\cgltf -IC:\Users\bilal\Desktop\GP\external\stb -IC:\Users\bilal\Desktop\GP\external\json -IC:\Users\bilal\Desktop\GP\external\glfw\include -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  OBJECT_DIR = CMakeFiles\ToyEngineVk.dir
+  OBJECT_FILE_DIR = CMakeFiles\ToyEngineVk.dir\src
+  TARGET_COMPILE_PDB = CMakeFiles\ToyEngineVk.dir\
+  TARGET_PDB = ToyEngineVk.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\ToyEngineVk.dir
+
+build CMakeFiles\ToyEngineVk.dir\src\gltf_loader.cpp.obj: CXX_COMPILER__ToyEngineVk_unscanned_Release C$:\Users\bilal\Desktop\GP\src\gltf_loader.cpp || cmake_object_order_depends_target_ToyEngineVk
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD /EHsc
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\cgltf -IC:\Users\bilal\Desktop\GP\external\stb -IC:\Users\bilal\Desktop\GP\external\json -IC:\Users\bilal\Desktop\GP\external\glfw\include -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
   OBJECT_DIR = CMakeFiles\ToyEngineVk.dir
   OBJECT_FILE_DIR = CMakeFiles\ToyEngineVk.dir\src
   TARGET_COMPILE_PDB = CMakeFiles\ToyEngineVk.dir\
@@ -108,7 +118,7 @@ build CMakeFiles\ToyEngineVk.dir\src\vk_main.cpp.obj: CXX_COMPILER__ToyEngineVk_
 #############################################
 # Link the executable ToyEngineVk.exe
 
-build ToyEngineVk.exe: CXX_EXECUTABLE_LINKER__ToyEngineVk_Release CMakeFiles\ToyEngineVk.dir\src\vk_main.cpp.obj | external\glfw\src\glfw3.lib C$:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib imgui.lib external\glfw\src\glfw3.lib C$:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib || Shaders external\glfw\src\glfw3.lib imgui.lib
+build ToyEngineVk.exe: CXX_EXECUTABLE_LINKER__ToyEngineVk_Release CMakeFiles\ToyEngineVk.dir\src\vk_main.cpp.obj CMakeFiles\ToyEngineVk.dir\src\gltf_loader.cpp.obj | external\glfw\src\glfw3.lib C$:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib imgui.lib external\glfw\src\glfw3.lib C$:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib || Shaders external\glfw\src\glfw3.lib imgui.lib
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -MD
   LINK_FLAGS = /machine:x64 /INCREMENTAL:NO /subsystem:console
@@ -180,7 +190,7 @@ build cmake_object_order_depends_target_imgui: phony || cmake_object_order_depen
 build CMakeFiles\imgui.dir\external\imgui\imgui.cpp.obj: CXX_COMPILER__imgui_unscanned_Release C$:\Users\bilal\Desktop\GP\external\imgui\imgui.cpp || cmake_object_order_depends_target_imgui
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
-  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
   OBJECT_DIR = CMakeFiles\imgui.dir
   OBJECT_FILE_DIR = CMakeFiles\imgui.dir\external\imgui
   TARGET_COMPILE_PDB = CMakeFiles\imgui.dir\imgui.pdb
@@ -190,7 +200,7 @@ build CMakeFiles\imgui.dir\external\imgui\imgui.cpp.obj: CXX_COMPILER__imgui_uns
 build CMakeFiles\imgui.dir\external\imgui\imgui_draw.cpp.obj: CXX_COMPILER__imgui_unscanned_Release C$:\Users\bilal\Desktop\GP\external\imgui\imgui_draw.cpp || cmake_object_order_depends_target_imgui
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
-  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
   OBJECT_DIR = CMakeFiles\imgui.dir
   OBJECT_FILE_DIR = CMakeFiles\imgui.dir\external\imgui
   TARGET_COMPILE_PDB = CMakeFiles\imgui.dir\imgui.pdb
@@ -200,7 +210,7 @@ build CMakeFiles\imgui.dir\external\imgui\imgui_draw.cpp.obj: CXX_COMPILER__imgu
 build CMakeFiles\imgui.dir\external\imgui\imgui_tables.cpp.obj: CXX_COMPILER__imgui_unscanned_Release C$:\Users\bilal\Desktop\GP\external\imgui\imgui_tables.cpp || cmake_object_order_depends_target_imgui
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
-  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
   OBJECT_DIR = CMakeFiles\imgui.dir
   OBJECT_FILE_DIR = CMakeFiles\imgui.dir\external\imgui
   TARGET_COMPILE_PDB = CMakeFiles\imgui.dir\imgui.pdb
@@ -210,7 +220,7 @@ build CMakeFiles\imgui.dir\external\imgui\imgui_tables.cpp.obj: CXX_COMPILER__im
 build CMakeFiles\imgui.dir\external\imgui\imgui_widgets.cpp.obj: CXX_COMPILER__imgui_unscanned_Release C$:\Users\bilal\Desktop\GP\external\imgui\imgui_widgets.cpp || cmake_object_order_depends_target_imgui
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
-  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
   OBJECT_DIR = CMakeFiles\imgui.dir
   OBJECT_FILE_DIR = CMakeFiles\imgui.dir\external\imgui
   TARGET_COMPILE_PDB = CMakeFiles\imgui.dir\imgui.pdb
@@ -220,7 +230,7 @@ build CMakeFiles\imgui.dir\external\imgui\imgui_widgets.cpp.obj: CXX_COMPILER__i
 build CMakeFiles\imgui.dir\external\imgui\backends\imgui_impl_glfw.cpp.obj: CXX_COMPILER__imgui_unscanned_Release C$:\Users\bilal\Desktop\GP\external\imgui\backends\imgui_impl_glfw.cpp || cmake_object_order_depends_target_imgui
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
-  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
   OBJECT_DIR = CMakeFiles\imgui.dir
   OBJECT_FILE_DIR = CMakeFiles\imgui.dir\external\imgui\backends
   TARGET_COMPILE_PDB = CMakeFiles\imgui.dir\imgui.pdb
@@ -230,9 +240,19 @@ build CMakeFiles\imgui.dir\external\imgui\backends\imgui_impl_glfw.cpp.obj: CXX_
 build CMakeFiles\imgui.dir\external\imgui\backends\imgui_impl_vulkan.cpp.obj: CXX_COMPILER__imgui_unscanned_Release C$:\Users\bilal\Desktop\GP\external\imgui\backends\imgui_impl_vulkan.cpp || cmake_object_order_depends_target_imgui
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
-  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
   OBJECT_DIR = CMakeFiles\imgui.dir
   OBJECT_FILE_DIR = CMakeFiles\imgui.dir\external\imgui\backends
+  TARGET_COMPILE_PDB = CMakeFiles\imgui.dir\imgui.pdb
+  TARGET_PDB = imgui.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\imgui.dir
+
+build CMakeFiles\imgui.dir\external\ImGuizmo\src\ImGuizmo.cpp.obj: CXX_COMPILER__imgui_unscanned_Release C$:\Users\bilal\Desktop\GP\external\ImGuizmo\src\ImGuizmo.cpp || cmake_object_order_depends_target_imgui
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\glfw\include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  OBJECT_DIR = CMakeFiles\imgui.dir
+  OBJECT_FILE_DIR = CMakeFiles\imgui.dir\external\ImGuizmo\src
   TARGET_COMPILE_PDB = CMakeFiles\imgui.dir\imgui.pdb
   TARGET_PDB = imgui.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\imgui.dir
@@ -245,7 +265,7 @@ build CMakeFiles\imgui.dir\external\imgui\backends\imgui_impl_vulkan.cpp.obj: CX
 #############################################
 # Link the static library imgui.lib
 
-build imgui.lib: CXX_STATIC_LIBRARY_LINKER__imgui_Release CMakeFiles\imgui.dir\external\imgui\imgui.cpp.obj CMakeFiles\imgui.dir\external\imgui\imgui_draw.cpp.obj CMakeFiles\imgui.dir\external\imgui\imgui_tables.cpp.obj CMakeFiles\imgui.dir\external\imgui\imgui_widgets.cpp.obj CMakeFiles\imgui.dir\external\imgui\backends\imgui_impl_glfw.cpp.obj CMakeFiles\imgui.dir\external\imgui\backends\imgui_impl_vulkan.cpp.obj || external\glfw\src\glfw3.lib
+build imgui.lib: CXX_STATIC_LIBRARY_LINKER__imgui_Release CMakeFiles\imgui.dir\external\imgui\imgui.cpp.obj CMakeFiles\imgui.dir\external\imgui\imgui_draw.cpp.obj CMakeFiles\imgui.dir\external\imgui\imgui_tables.cpp.obj CMakeFiles\imgui.dir\external\imgui\imgui_widgets.cpp.obj CMakeFiles\imgui.dir\external\imgui\backends\imgui_impl_glfw.cpp.obj CMakeFiles\imgui.dir\external\imgui\backends\imgui_impl_vulkan.cpp.obj CMakeFiles\imgui.dir\external\ImGuizmo\src\ImGuizmo.cpp.obj || external\glfw\src\glfw3.lib
   CONFIG = Release
   LANGUAGE_COMPILE_FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -MD
   LINK_FLAGS = /machine:x64

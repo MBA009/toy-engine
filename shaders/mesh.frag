@@ -13,6 +13,10 @@ layout(set = 0, binding = 0) uniform Scene {
     ivec4 info;      // x = number of active lights, y = lighting enabled (1) or flat albedo (0)
 } scene;
 
+// Set 1: the material's base color texture (a white 1x1 for untextured meshes). Sampled through an
+// _SRGB image view, so the value arrives already linear.
+layout(set = 1, binding = 0) uniform sampler2D baseColorTex;
+
 layout(push_constant) uniform Push {
     mat4 model;
     vec4 params;
@@ -22,6 +26,7 @@ layout(location = 0) in vec3 fragColor;
 layout(location = 1) in vec3 fragNormal;
 layout(location = 2) in vec3 fragWorldPos;
 layout(location = 3) in vec2 fragUV;
+layout(location = 4) flat in uint fragFlags;
 
 layout(location = 0) out vec4 outColor;
 
@@ -31,7 +36,7 @@ void main() {
     vec3 V = normalize(scene.cameraPos.xyz - fragWorldPos);
 
     // Our colors are authored as sRGB; lighting math must happen in linear space
-    vec3 albedo = pow(fragColor, vec3(2.2));
+    vec3 albedo = pow(fragColor, vec3(2.2)) * texture(baseColorTex, fragUV).rgb;
 
     // Procedural checker for the floor, based on world position so squares stay square
     if (pc.params.x > 0.5) {
@@ -39,9 +44,17 @@ void main() {
         albedo *= mix(0.25, 1.0, c);
     }
 
+    // Selected in the editor: an orange glow, strongest at grazing angles (a rim), so the
+    // outline reads even on a dark or flat-shaded surface
+    vec3 glow = vec3(0.0);
+    if ((fragFlags & 0x80000000u) != 0u) {
+        float rim = pow(1.0 - max(dot(N, V), 0.0), 2.0);
+        glow = vec3(1.0, 0.55, 0.1) * (0.20 + 1.2 * rim);
+    }
+
     // Debug toggle: show the surface color with no lighting at all
     if (scene.info.y == 0) {
-        outColor = vec4(albedo, 1.0);
+        outColor = vec4(albedo + glow, 1.0);
         return;
     }
 
@@ -66,5 +79,5 @@ void main() {
     }
 
     // The sRGB swapchain converts linear -> sRGB on write, so no manual gamma here
-    outColor = vec4(result, 1.0);
+    outColor = vec4(result + glow, 1.0);
 }

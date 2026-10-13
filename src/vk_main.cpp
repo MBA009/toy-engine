@@ -1,10 +1,14 @@
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <string>
 
 #include <iostream>
@@ -19,8 +23,15 @@
 #include "components.h"
 #include "ecs.h"
 #include "ecs_systems.h"
+#include "camera.h"
+#include "picking.h"
+#include "mesh_data.h"
+#include "gltf_loader.h"
+#include "scene_io.h"
+#include "file_watch.h"
 
 #include "imgui.h"
+#include "ImGuizmo.h"
 #include "backends/imgui_impl_glfw.h"
 #include "backends/imgui_impl_vulkan.h"
 
@@ -31,8 +42,10 @@ inline constexpr int VK_BENCH_NUM_COUNTS = (int)(sizeof(VK_BENCH_COUNTS) / sizeo
 inline constexpr int MAX_CUBES = 100000;
 inline constexpr int MAX_INSTANCES = MAX_CUBES + 1;   // + the floor
 
-const uint32_t WIDTH = 800;
+const uint32_t WIDTH = 800;       // benchmark window: fixed so results stay comparable with Phase 2
 const uint32_t HEIGHT = 600;
+const uint32_t EDITOR_WIDTH = 1280;   // interactive window: room for the editor panels
+const uint32_t EDITOR_HEIGHT = 720;
 const int MAX_FRAMES_IN_FLIGHT = 2;
 
 const std::vector<const char*> validationLayers = { "VK_LAYER_KHRONOS_validation" };
@@ -65,13 +78,6 @@ struct SwapchainSupport {
     VkSurfaceCapabilitiesKHR caps{};
     std::vector<VkSurfaceFormatKHR> formats;
     std::vector<VkPresentModeKHR> presentModes;
-};
-
-struct MeshVertex {
-    Vec3 pos;
-    Vec3 color;
-    Vec3 normal;
-    float u, v;
 };
 
 struct LightGPU {
@@ -141,11 +147,52 @@ private:
     // Mesh data (CPU side, then uploaded)
     std::vector<MeshVertex> meshVertices;
     std::vector<uint32_t> meshIndices;
-    uint32_t cubeIndexCount = 0, floorFirstIndex = 0, floorIndexCount = 0;
+
+    // Every mesh lives in the one big vertex buffer and one big index buffer; this table says where.
+    // 0 = the built-in cube, 1 = the floor, 2+ = meshes imported from glTF files.
+    struct MeshInfo {
+        std::string name;
+        uint32_t firstIndex = 0, indexCount = 0;
+        int32_t vertexOffset = 0;      // added to every index when drawing, so imported meshes keep local indices
+        Aabb bounds;                   // in the mesh's own space (used for picking)
+        // The mesh is drawn as one draw call per submesh (= per material). Indices are global positions in the
+        // shared index buffer, like firstIndex above. material = index into materialSets.
+        struct Sub { uint32_t firstIndex, indexCount, material; };
+        std::vector<Sub> subs;
+        bool retired = false;          // replaced by a hot reload: still in the buffers, but no longer offered anywhere
+        uint32_t textureCount = 0;     // for the Assets panel
+    };
+    std::vector<MeshInfo> meshes;
+
+    // This frame's draw list grouped by mesh: instances [first, first+count) all use mesh `mesh`
+    struct DrawRange { uint32_t mesh, first, count; };
+    std::vector<DrawRange> drawRanges;
+    uint32_t drawnTriangles = 0;
+
+    // Assets panel
+    std::vector<std::string> assetFiles;                          // .gltf / .glb files found under assets/
+    double lastAssetScan = -100.0;
+    std::string assetStatus;                                      // last import result, shown in the panel
+    std::vector<std::pair<std::string, uint32_t>> loadedAssets;   // file path -> mesh id, so a file imports once
+    std::vector<std::vector<std::string>> loadedAssetDeps;        // same index: the files that import read (watched for changes)
     VkBuffer vertexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory vertexMemory = VK_NULL_HANDLE;
     VkBuffer indexBuffer = VK_NULL_HANDLE;
     VkDeviceMemory indexMemory = VK_NULL_HANDLE;
+
+    // Textures & materials. A material is a descriptor set (set 1) holding one combined image sampler.
+    // Material 0 is the default: a 1x1 white texture, so untextured meshes multiply by 1 and look as before.
+    struct GpuTexture { uint32_t mipLevels = 1; VkImage image = VK_NULL_HANDLE; VkDeviceMemory memory = VK_NULL_HANDLE; VkImageView view = VK_NULL_HANDLE; };
+    static constexpr uint32_t MAX_MATERIALS = 512;
+    std::vector<GpuTexture> textures;
+    VkSampler textureSampler = VK_NULL_HANDLE;
+    std::vector<uint32_t> materialTexture;       // materialSets[i] shows textures[materialTexture[i]] (to rewrite on sampler change)
+    int filterMode = 2;                          // 0 = nearest, 1 = bilinear (base level only), 2 = trilinear (mipmaps)
+    int anisotropy = 8;                          // requested max anisotropy (clamped to the GPU's limit)
+    float maxAnisotropy = 1.0f;                  // the GPU's limit; 1 = anisotropic filtering unsupported
+    VkDescriptorSetLayout materialSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool materialPool = VK_NULL_HANDLE;
+    std::vector<VkDescriptorSet> materialSets;
 
     // Uniforms (one buffer + descriptor set per frame in flight)
     VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
@@ -175,8 +222,53 @@ private:
     bool wireframe = false;         // toggle: draw triangle edges only
     bool lightingOn = true;         // toggle: off = flat albedo, no lighting
     bool simPaused = false;         // toggle: stop the spin system
-    bool camFrozen = false;         // toggle: stop the camera sway
-    float camTime = 0.0f;           // advances only while the camera is not frozen
+    // Camera: free-fly (hold the right mouse button), or the old automatic sway as a demo mode
+    FlyCamera cam;
+    bool camAutoSway = false;
+    float camTime = 0.0f;           // drives the auto-sway
+    bool looking = false;           // right mouse button held: mouse-look + WASD/QE active
+
+    // Selection / picking
+    Entity selected = NULL_ENTITY;
+    float selectedDistance = 0.0f;                 // distance from the camera to the last picked hit
+    Mat4 pickInvViewProj = Mat4::identity();       // from the last rendered frame
+    bool havePickMatrix = false;
+    bool prevLeftDown = false, prevDeleteDown = false;
+    bool prevHotkey[3] = {};                       // W / E / R, for edge detection
+
+    // Transform gizmo (ImGuizmo)
+    ImGuizmo::OPERATION gizmoOp = ImGuizmo::TRANSLATE;
+    bool gizmoSnap = false;
+    bool gizmoOver = false;                        // the mouse is over a gizmo handle
+    bool gizmoActive = false;                      // a gizmo handle is being dragged
+    Mat4 lastView = Mat4::identity(), lastProj = Mat4::identity();   // OpenGL-style, before the Vulkan fix-up
+    float simTime = 0.0f;                          // time that only advances while the simulation runs
+    bool demoScene = false;                        // interactive default: a few named cubes
+    // Inspector state
+    char nameBuf[128] = {};
+    bool nameEditing = false;                      // the name text box has focus: don't overwrite what's being typed
+
+    // Lights, editable from the Inspector (these feed the scene uniform buffer every frame)
+    struct EditorLight { float pos[3]; float color[3]; float intensity; };
+    EditorLight lightCfg[3] = {
+        { {  1.5f, 1.5f,  0.0f }, { 1.0f, 0.90f, 0.75f }, 4.0f },   // warm white, upper right
+        { { -1.8f, 1.0f, -2.5f }, { 0.4f, 0.60f, 1.00f }, 3.0f },   // cool blue fill, far left
+        { {  0.0f, 0.7f, -1.5f }, { 1.0f, 0.35f, 0.30f }, 3.0f },   // orbits around its position
+    };
+    bool light2Orbit = true;
+
+    bool prevSaveDown = false;
+    char scenePath[260] = "scenes/scene.json";     // file the Scene panel saves to / loads from
+    std::string sceneStatus;                       // result of the last save / load, shown in the Scene panel
+    // Hot reload (Step 6.4): poll file timestamps; editor mode only
+    bool hotReload = true;
+    FileWatcher shaderWatch, assetWatch;
+    double lastHotPoll = 0.0;
+    int shaderReloads = 0;
+    std::string shaderStatus = "watching shaders/*.vert, *.frag";
+    int cubeSerial = 0;                            // numbers the cubes added from the Hierarchy panel
+    Entity lastScrolledTo = NULL_ENTITY;           // so the entity list scrolls only when the selection changes
+    double lastMouseX = 0.0, lastMouseY = 0.0;
     uint32_t drawCallsLastFrame = 0;
     double frameDt = 0.0, prevFrameTime = 0.0;
     double msSpin = 0.0, msDrawList = 0.0, msUpload = 0.0;   // per-system CPU timings, last frame
@@ -206,7 +298,8 @@ private:
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API); // Vulkan: no OpenGL context
         glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);   // resizing handled later with swapchain recreation
-        window = glfwCreateWindow(WIDTH, HEIGHT, "Toy Engine (Vulkan)", nullptr, nullptr);
+        window = benchMode ? glfwCreateWindow(WIDTH, HEIGHT, "Toy Engine (Vulkan)", nullptr, nullptr)
+                           : glfwCreateWindow(EDITOR_WIDTH, EDITOR_HEIGHT, "Toy Engine (Vulkan)", nullptr, nullptr);
         if (!window) throw std::runtime_error("Failed to create window");
     }
 
@@ -224,6 +317,7 @@ private:
         createCommandPool();
         createDepthResources();
         createFramebuffers();
+        createTextureResources();
         createMeshBuffers();
         createInstanceBuffers();
         createUniformBuffers();
@@ -240,12 +334,21 @@ private:
             instanced = false;   // first half of the run: one draw call per cube
             printf("mode,cubes,triangles,frame_ms,fps,sim_ms,cpu_ms,gpu_ms\n");
         }
+        demoScene = !benchMode;
         spawnScene();
+        // The editor reopens the last saved scene (the demo scene above stays if there is no file or it is broken;
+        // the Scene panel then shows why). Benchmarks always start from their own generated scene.
+        if (imguiEnabled && std::filesystem::exists(scenePath)) loadScene(scenePath);
         prevFrameTime = glfwGetTime();   // so the first frame's dt isn't "time since startup"
         benchStageStart = glfwGetTime();
 
+        if (imguiEnabled) {
+            for (const char* f : { "shaders/mesh.vert", "shaders/mesh.frag", "shaders/mesh.vert.spv", "shaders/mesh.frag.spv" })
+                shaderWatch.watch(f);
+        }
         while (!glfwWindowShouldClose(window)) {
             glfwPollEvents();
+            pollHotReload();
             drawFrame();
         }
         vkDeviceWaitIdle(device); // let the GPU finish before we start destroying things
@@ -283,6 +386,15 @@ private:
         }
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
         vkDestroyDescriptorSetLayout(device, descriptorSetLayout, nullptr);
+
+        vkDestroyDescriptorPool(device, materialPool, nullptr);      // frees every material's descriptor set
+        vkDestroyDescriptorSetLayout(device, materialSetLayout, nullptr);
+        vkDestroySampler(device, textureSampler, nullptr);
+        for (const GpuTexture& t : textures) {
+            vkDestroyImageView(device, t.view, nullptr);
+            vkDestroyImage(device, t.image, nullptr);
+            vkFreeMemory(device, t.memory, nullptr);
+        }
 
         for (size_t i = 0; i < instanceBuffers.size(); i++) {
             vkDestroyBuffer(device, instanceBuffers[i], nullptr);
@@ -475,6 +587,12 @@ private:
         VkPhysicalDeviceFeatures supported{};
         vkGetPhysicalDeviceFeatures(physicalDevice, &supported);
         VkPhysicalDeviceFeatures features{};
+        if (supported.samplerAnisotropy) {         // anisotropic texture filtering (Step 6.3)
+            features.samplerAnisotropy = VK_TRUE;
+            VkPhysicalDeviceProperties props;
+            vkGetPhysicalDeviceProperties(physicalDevice, &props);
+            maxAnisotropy = std::max(1.0f, props.limits.maxSamplerAnisotropy);
+        }
         if (supported.fillModeNonSolid) {          // needed for the wireframe toggle
             features.fillModeNonSolid = VK_TRUE;
             wireframeSupported = true;
@@ -693,9 +811,19 @@ private:
         return mod;
     }
 
-    void createGraphicsPipeline() {
-        VkShaderModule vert = createShaderModule(readFile("shaders/mesh.vert.spv"));
-        VkShaderModule frag = createShaderModule(readFile("shaders/mesh.frag.spv"));
+    // Builds (or REBUILDS, for shader hot reload) the fill and wireframe pipelines from shaders/*.spv.
+    // On failure it returns false with the reason in `error` and leaves any existing pipelines untouched,
+    // so a broken shader edit can never take the renderer down.
+    bool createGraphicsPipeline(std::string& error) {
+        VkShaderModule vert = VK_NULL_HANDLE, frag = VK_NULL_HANDLE;
+        try {
+            vert = createShaderModule(readFile("shaders/mesh.vert.spv"));
+            frag = createShaderModule(readFile("shaders/mesh.frag.spv"));
+        } catch (const std::exception& ex) {
+            if (vert != VK_NULL_HANDLE) vkDestroyShaderModule(device, vert, nullptr);
+            error = ex.what();
+            return false;
+        }
 
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -717,7 +845,7 @@ private:
         };
         // A mat4 attribute occupies 4 consecutive locations (4..7), one column each.
         // Our Mat4 is column-major with 16 contiguous floats, so the columns sit at +0/16/32/48.
-        VkVertexInputAttributeDescription attrs[8] = {
+        VkVertexInputAttributeDescription attrs[9] = {
             { 0, 0, VK_FORMAT_R32G32B32_SFLOAT, (uint32_t)offsetof(MeshVertex, pos) },
             { 1, 0, VK_FORMAT_R32G32B32_SFLOAT, (uint32_t)offsetof(MeshVertex, color) },
             { 2, 0, VK_FORMAT_R32G32B32_SFLOAT, (uint32_t)offsetof(MeshVertex, normal) },
@@ -726,12 +854,13 @@ private:
             { 5, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 16 },
             { 6, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 32 },
             { 7, 1, VK_FORMAT_R32G32B32A32_SFLOAT, 48 },
+            { 8, 1, VK_FORMAT_R32_UINT, (uint32_t)offsetof(DrawItem, materialId) },   // flags (selected, ...)
         };
         VkPipelineVertexInputStateCreateInfo vertexInput{};
         vertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
         vertexInput.vertexBindingDescriptionCount = 2;
         vertexInput.pVertexBindingDescriptions = bindings;
-        vertexInput.vertexAttributeDescriptionCount = 8;
+        vertexInput.vertexAttributeDescriptionCount = 9;
         vertexInput.pVertexAttributeDescriptions = attrs;
 
         VkPipelineInputAssemblyStateCreateInfo inputAssembly{};
@@ -783,11 +912,13 @@ private:
         VkPushConstantRange push{ VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(PushData) };
         VkPipelineLayoutCreateInfo layoutInfo{};
         layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-        layoutInfo.setLayoutCount = 1;
-        layoutInfo.pSetLayouts = &descriptorSetLayout;
+        VkDescriptorSetLayout setLayouts[2] = { descriptorSetLayout, materialSetLayout };   // set 0 = scene, set 1 = material
+        layoutInfo.setLayoutCount = 2;
+        layoutInfo.pSetLayouts = setLayouts;
         layoutInfo.pushConstantRangeCount = 1;
         layoutInfo.pPushConstantRanges = &push;
-        if (vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
+        if (pipelineLayout == VK_NULL_HANDLE &&           // created once; a rebuild reuses it
+            vkCreatePipelineLayout(device, &layoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS)
             throw std::runtime_error("Failed to create pipeline layout");
 
         VkGraphicsPipelineCreateInfo info{};
@@ -806,21 +937,41 @@ private:
         info.renderPass = renderPass;
         info.subpass = 0;
 
-        VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &graphicsPipeline);
+        VkPipeline newFill = VK_NULL_HANDLE, newWire = VK_NULL_HANDLE;
+        VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &newFill);
 
         // Second pipeline: identical except it rasterizes triangle edges (debug toggle).
         // `info` still points at `raster`, so changing the mode there is all it takes.
         if (result == VK_SUCCESS && wireframeSupported) {
             raster.polygonMode = VK_POLYGON_MODE_LINE;
-            result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &wireframePipeline);
+            result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &newWire);
         }
 
         // Shader modules are only needed during pipeline creation
         vkDestroyShaderModule(device, frag, nullptr);
         vkDestroyShaderModule(device, vert, nullptr);
 
-        if (result != VK_SUCCESS)
-            throw std::runtime_error("Failed to create graphics pipeline");
+        if (result != VK_SUCCESS) {
+            if (newFill != VK_NULL_HANDLE) vkDestroyPipeline(device, newFill, nullptr);
+            if (newWire != VK_NULL_HANDLE) vkDestroyPipeline(device, newWire, nullptr);
+            error = "vkCreateGraphicsPipelines failed (" + std::to_string((int)result) + "); do the new shaders still match the vertex layout and descriptor sets?";
+            return false;
+        }
+
+        // Swap in the new pipelines. The GPU may still be drawing with the old ones, so wait for it first.
+        if (graphicsPipeline != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(device);
+            vkDestroyPipeline(device, graphicsPipeline, nullptr);
+            if (wireframePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, wireframePipeline, nullptr);
+        }
+        graphicsPipeline = newFill;
+        wireframePipeline = newWire;
+        return true;
+    }
+
+    void createGraphicsPipeline() {
+        std::string error;
+        if (!createGraphicsPipeline(error)) throw std::runtime_error("Failed to create graphics pipeline: " + error);
     }
 
     // ---------- Framebuffers ----------
@@ -916,16 +1067,31 @@ private:
         cubePush.params[0] = 0.0f;           // no checker
         cubePush.params[1] = 48.0f;          // shininess
         vkCmdPushConstants(cmd, pipelineLayout, pushStages, 0, sizeof(PushData), &cubePush);
-        if (instanced) {
-            // ONE draw call: the GPU runs the cube's 36 indices drawnCubes times, instance 0..N-1
-            vkCmdDrawIndexed(cmd, cubeIndexCount, drawnCubes, 0, 0, 0);
-            drawCallsLastFrame += 1;
-        } else {
-            // N draw calls of one instance each; firstInstance selects which matrix to read
-            for (uint32_t i = 0; i < drawnCubes; i++)
-                vkCmdDrawIndexed(cmd, cubeIndexCount, 1, 0, 0, i);
-            drawCallsLastFrame += drawnCubes;
+        // One range per mesh. Instanced: ONE draw call per mesh, the GPU repeats the mesh's indices for
+        // instances first..first+count-1. Otherwise: one draw call per object (firstInstance picks its matrix).
+        // A mesh with several materials is several draw calls (one per submesh), each with its material bound.
+        uint32_t boundMaterial = ~0u;
+        auto bindMaterial = [&](uint32_t mat) {
+            if (mat == boundMaterial) return;
+            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1,
+                                    &materialSets[mat], 0, nullptr);
+            boundMaterial = mat;
+        };
+        for (const DrawRange& r : drawRanges) {
+            const MeshInfo& m = meshes[r.mesh];
+            for (const MeshInfo::Sub& sub : m.subs) {
+                bindMaterial(sub.material);
+                if (instanced) {
+                    vkCmdDrawIndexed(cmd, sub.indexCount, r.count, sub.firstIndex, m.vertexOffset, r.first);
+                    drawCallsLastFrame += 1;
+                } else {
+                    for (uint32_t k = 0; k < r.count; k++)
+                        vkCmdDrawIndexed(cmd, sub.indexCount, 1, sub.firstIndex, m.vertexOffset, r.first + k);
+                    drawCallsLastFrame += r.count;
+                }
+            }
         }
+        bindMaterial(0);
 
         // Floor: static, checkered, less glossy. Its matrix is the last instance (index drawnCubes).
         PushData floorPush{};
@@ -933,7 +1099,8 @@ private:
         floorPush.params[0] = 1.0f;  // checker on
         floorPush.params[1] = 16.0f;
         vkCmdPushConstants(cmd, pipelineLayout, pushStages, 0, sizeof(PushData), &floorPush);
-        vkCmdDrawIndexed(cmd, floorIndexCount, 1, floorFirstIndex, 0, drawnCubes);
+        const MeshInfo& floorMesh = meshes[1];
+        vkCmdDrawIndexed(cmd, floorMesh.indexCount, 1, floorMesh.firstIndex, floorMesh.vertexOffset, drawnCubes);
         drawCallsLastFrame += 1;
 
         // The debug overlay draws last, inside the same render pass, on top of the scene
@@ -1084,18 +1251,513 @@ private:
         addQuad({-h,-h,-h}, {-h,-h, h}, {-h, h, h}, {-h, h,-h}, {-1, 0, 0}, {0.9f, 0.3f, 0.9f}); // left   magenta
         addQuad({-h, h, h}, { h, h, h}, { h, h,-h}, {-h, h,-h}, { 0, 1, 0}, {0.3f, 0.3f, 0.9f}); // top    blue
         addQuad({-h,-h,-h}, { h,-h,-h}, { h,-h, h}, {-h,-h, h}, { 0,-1, 0}, {0.9f, 0.9f, 0.3f}); // bottom yellow
-        cubeIndexCount = (uint32_t)meshIndices.size(); // 36
+        MeshInfo cube;
+        cube.name = "Cube";
+        cube.indexCount = (uint32_t)meshIndices.size();   // 36; these built-in meshes use global indices, vertex offset 0
+        cube.subs.push_back({ 0, cube.indexCount, 0 });
+        meshes.push_back(cube);
 
         // Floor (same extents as Phase 1), wound counter-clockwise seen from above
-        floorFirstIndex = (uint32_t)meshIndices.size();
+        MeshInfo floorInfo;
+        floorInfo.name = "Floor";
+        floorInfo.firstIndex = (uint32_t)meshIndices.size();
         addQuad({-1,-0.5f,-0.5f}, { 1,-0.5f,-0.5f}, { 1,-0.5f,-5.0f}, {-1,-0.5f,-5.0f},
                 { 0, 1, 0}, {0.6f, 0.6f, 0.6f});
-        floorIndexCount = 6;
+        floorInfo.indexCount = 6;
+        floorInfo.subs.push_back({ floorInfo.firstIndex, 6, 0 });
+        floorInfo.bounds.min = { -1.0f, -0.5f, -5.0f };
+        floorInfo.bounds.max = {  1.0f, -0.5f, -0.5f };
+        meshes.push_back(floorInfo);
 
+        uploadMeshBuffers();
+    }
+
+    // (Re)creates the GPU vertex and index buffers from the CPU arrays. Called at startup and whenever a mesh
+    // is imported; the old buffers are only destroyed after the GPU has finished with them.
+    void uploadMeshBuffers() {
+        if (vertexBuffer != VK_NULL_HANDLE) {
+            vkDeviceWaitIdle(device);
+            vkDestroyBuffer(device, indexBuffer, nullptr);
+            vkFreeMemory(device, indexMemory, nullptr);
+            vkDestroyBuffer(device, vertexBuffer, nullptr);
+            vkFreeMemory(device, vertexMemory, nullptr);
+            vertexBuffer = indexBuffer = VK_NULL_HANDLE;
+        }
         createDeviceLocalBuffer(meshVertices.data(), sizeof(MeshVertex) * meshVertices.size(),
                                 VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, vertexBuffer, vertexMemory);
         createDeviceLocalBuffer(meshIndices.data(), sizeof(uint32_t) * meshIndices.size(),
                                 VK_BUFFER_USAGE_INDEX_BUFFER_BIT, indexBuffer, indexMemory);
+    }
+
+    // Appends an imported mesh to the shared buffers and returns its id (an index into `meshes`)
+    uint32_t addMesh(const MeshData& md) {
+        MeshInfo info;
+        info.name = md.name;
+        info.vertexOffset = (int32_t)meshVertices.size();   // the mesh's indices stay local; this offset is added at draw time
+        info.firstIndex = (uint32_t)meshIndices.size();
+        info.indexCount = (uint32_t)md.indices.size();
+        info.bounds = md.bounds;
+
+        // Textures -> GPU, then one material per glTF material (-1 / untextured = the default material 0)
+        std::vector<uint32_t> imageTex(md.images.size());
+        for (size_t i = 0; i < md.images.size(); i++)
+            imageTex[i] = createTexture(md.images[i].rgba.data(), (uint32_t)md.images[i].width, (uint32_t)md.images[i].height);
+        std::vector<uint32_t> materialId(md.materials.size(), 0);
+        for (size_t i = 0; i < md.materials.size(); i++) {
+            int img = md.materials[i].baseColorImage;
+            if (img >= 0) { materialId[i] = createMaterial(imageTex[img]); info.textureCount++; }
+        }
+        for (const Submesh& sm : md.submeshes)
+            info.subs.push_back({ info.firstIndex + sm.firstIndex, sm.indexCount,
+                                  sm.material >= 0 ? materialId[sm.material] : 0u });
+        if (info.subs.empty()) info.subs.push_back({ info.firstIndex, info.indexCount, 0 });
+
+        meshVertices.insert(meshVertices.end(), md.vertices.begin(), md.vertices.end());
+        meshIndices.insert(meshIndices.end(), md.indices.begin(), md.indices.end());
+        meshes.push_back(info);
+        uploadMeshBuffers();
+        return (uint32_t)meshes.size() - 1;
+    }
+
+    // ---------- Camera input ----------
+
+    // Right mouse button held = fly mode: the cursor is captured, the mouse turns the camera,
+    // WASD/QE move it. (The keys only work in fly mode so they stay free for editor shortcuts later.)
+    void updateCamera() {
+        bool imguiWantsMouse = imguiEnabled && ImGui::GetIO().WantCaptureMouse;
+        bool rmb = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+
+        if (rmb && !looking && !imguiWantsMouse) {          // just pressed, and not over the overlay
+            looking = true;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+            if (glfwRawMouseMotionSupported()) glfwSetInputMode(window, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
+            glfwGetCursorPos(window, &lastMouseX, &lastMouseY);   // read AFTER the mode change
+        } else if (!rmb && looking) {                        // released
+            looking = false;
+            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        }
+        if (!looking) return;
+
+        double mx, my;
+        glfwGetCursorPos(window, &mx, &my);
+        cam.look((float)(mx - lastMouseX), (float)(my - lastMouseY));
+        lastMouseX = mx; lastMouseY = my;
+
+        auto down = [&](int key) { return glfwGetKey(window, key) == GLFW_PRESS ? 1.0f : 0.0f; };
+        float fwd = down(GLFW_KEY_W) - down(GLFW_KEY_S);
+        float rgt = down(GLFW_KEY_D) - down(GLFW_KEY_A);
+        float up  = down(GLFW_KEY_E) - down(GLFW_KEY_Q);
+        float fast = (down(GLFW_KEY_LEFT_SHIFT) > 0.0f) ? 3.0f : 1.0f;
+        cam.move(fwd, rgt, up, fast, (float)std::min(frameDt, 0.1));
+    }
+
+    // ---------- Editing: add / duplicate / delete ----------
+
+    bool selectionValid() const {
+        return selected != NULL_ENTITY && world.alive(selected) && world.has<Transform>(selected);
+    }
+
+    // A new cube 3 units in front of the camera (never below the floor), named and selected
+    void addCube() {
+        if (world.size() >= (size_t)MAX_CUBES) return;
+        Entity e = world.create();
+        Vec3 f = cam.forward();
+        Transform t;
+        t.position = { cam.position.x + f.x * 3.0f, std::max(cam.position.y + f.y * 3.0f, -0.25f), cam.position.z + f.z * 3.0f };
+        t.scale = 0.5f;
+        world.add<Transform>(e, t);
+        world.add<Spin>(e, Spin{ 0.8f });
+        world.add<MeshRenderer>(e, MeshRenderer{ 0, 0 });
+        world.add<Name>(e, Name{ "Cube " + std::to_string(++cubeSerial) });
+        selected = e;
+        cubeCount = (int)world.size();
+    }
+
+    void duplicateSelected() {
+        if (!selectionValid() || world.size() >= (size_t)MAX_CUBES) return;
+        // Copy by value first: adding components can reallocate the pools these references point into
+        Transform t = world.get<Transform>(selected);
+        bool hasSpin = world.has<Spin>(selected);
+        Spin spin = hasSpin ? world.get<Spin>(selected) : Spin{};
+        MeshRenderer mr = world.has<MeshRenderer>(selected) ? world.get<MeshRenderer>(selected) : MeshRenderer{};
+        std::string name = world.has<Name>(selected) ? world.get<Name>(selected).value : std::string("Cube");
+
+        Entity e = world.create();
+        t.position.x += 0.6f * t.scale;           // offset so the copy doesn't sit inside the original
+        world.add<Transform>(e, t);
+        if (hasSpin) world.add<Spin>(e, spin);
+        world.add<MeshRenderer>(e, mr);
+        world.add<Name>(e, Name{ name + " (copy)" });
+        selected = e;
+        cubeCount = (int)world.size();
+    }
+
+    void deleteSelected() {
+        if (!selectionValid()) return;
+        world.destroy(selected);                   // removes it from every component pool
+        selected = NULL_ENTITY;
+        cubeCount = (int)world.size();
+    }
+
+    // ---------- Hierarchy panel ----------
+
+    // A second window listing every entity (one row each), sharing the selection with picking.
+    // ImGuiListClipper submits only the rows that are on screen, so 100,000 entities cost the same as 20.
+    void buildHierarchy() {
+        int winW, winH;
+        glfwGetWindowSize(window, &winW, &winH);
+        ImGui::SetNextWindowPos(ImVec2((float)winW - 270.0f, 10.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(260.0f, 380.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowBgAlpha(0.88f);
+        ImGui::Begin("Hierarchy");
+
+        bool full = world.size() >= (size_t)MAX_CUBES;
+        bool hasSel = selectionValid();
+        ImGui::BeginDisabled(full);
+        if (ImGui::Button("+ Cube")) addCube();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!hasSel || full);
+        if (ImGui::Button("Duplicate")) duplicateSelected();
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!hasSel);
+        if (ImGui::Button("Delete")) deleteSelected();
+        ImGui::EndDisabled();
+
+        Pool<Transform>& pool = world.pool<Transform>();
+        const std::vector<Entity>& ents = pool.entities();
+        ImGui::Text("%zu entities", ents.size());
+        ImGui::Separator();
+
+        ImGui::BeginChild("##entity_list");
+        const float rowHeight = ImGui::GetTextLineHeightWithSpacing();
+
+        // Selection changed somewhere else (a click in the 3D view): bring its row into view
+        if (selected != lastScrolledTo) {
+            lastScrolledTo = selected;
+            if (selectionValid())
+                ImGui::SetScrollY(std::max(0.0f, (float)pool.indexOf(selected) * rowHeight - ImGui::GetWindowHeight() * 0.5f));
+        }
+
+        ImGuiListClipper clipper;
+        clipper.Begin((int)ents.size(), rowHeight);
+        while (clipper.Step()) {
+            for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
+                Entity e = ents[i];
+                char label[128];
+                if (world.has<Name>(e)) snprintf(label, sizeof(label), "%s", world.get<Name>(e).value.c_str());
+                else                    snprintf(label, sizeof(label), "Cube %u", e);
+                ImGui::PushID((int)e);                       // entity id keeps rows with equal names distinct
+                if (ImGui::Selectable(label, e == selected)) {
+                    selected = e;
+                    lastScrolledTo = e;                      // we clicked it: no need to scroll
+                    selectedDistance = 0.0f;
+                }
+                ImGui::PopID();
+            }
+        }
+        clipper.End();
+        ImGui::EndChild();
+
+        ImGui::End();
+    }
+
+    // ---------- Transform gizmo ----------
+
+    // Draws the move / rotate / scale handles on the selected entity and applies a drag to its Transform.
+    // ImGuizmo wants column-major float[16] matrices and an OpenGL-style view/projection, which is exactly
+    // how Mat4 stores its data (m[col][row]) and what lastView / lastProj hold.
+    void buildGizmo() {
+        if (!selectionValid() || !havePickMatrix) { gizmoOver = gizmoActive = false; return; }
+
+        ImGuiIO& io = ImGui::GetIO();
+        ImGuizmo::SetOrthographic(false);
+        ImGuizmo::SetDrawlist(ImGui::GetBackgroundDrawList());   // behind the panels
+        ImGuizmo::SetRect(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y);
+
+        Transform& t = world.get<Transform>(selected);
+        Mat4 model = modelMatrix(t);
+
+        const float* snap = nullptr;
+        float snapTranslate[3] = { 0.1f, 0.1f, 0.1f };
+        float snapRotate[3]    = { 15.0f, 15.0f, 15.0f };      // degrees
+        float snapScale[3]     = { 0.1f, 0.1f, 0.1f };
+        if (gizmoSnap) snap = gizmoOp == ImGuizmo::TRANSLATE ? snapTranslate
+                            : gizmoOp == ImGuizmo::ROTATE_Y  ? snapRotate : snapScale;
+
+        // Scale and yaw are about the cube's own axes; moving is along the world axes
+        ImGuizmo::MODE mode = gizmoOp == ImGuizmo::TRANSLATE ? ImGuizmo::WORLD : ImGuizmo::LOCAL;
+        bool changed = ImGuizmo::Manipulate(&lastView.m[0][0], &lastProj.m[0][0], gizmoOp, mode, &model.m[0][0],
+                                            nullptr, snap);
+        gizmoOver = ImGuizmo::IsOver();
+        gizmoActive = ImGuizmo::IsUsingAny();
+
+        if (changed) {
+            float oldY = t.position.y;
+            t = transformFromMatrix(model, t);
+            t.scale = std::max(t.scale, 0.01f);
+            // A bobbing cube's height is baseY + wobble, so moving it up or down moves baseY too
+            if (world.has<Bob>(selected)) world.get<Bob>(selected).baseY += t.position.y - oldY;
+        }
+    }
+
+    // ---------- Assets ----------
+
+    void rescanAssets() {
+        namespace fs = std::filesystem;
+        assetFiles.clear();
+        std::error_code ec;
+        for (fs::recursive_directory_iterator it("assets", ec), end; !ec && it != end; it.increment(ec)) {
+            if (!it->is_regular_file(ec)) continue;
+            std::string ext = it->path().extension().string();
+            std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+            if (ext == ".gltf" || ext == ".glb") assetFiles.push_back(it->path().generic_string());
+        }
+        std::sort(assetFiles.begin(), assetFiles.end());
+        lastAssetScan = glfwGetTime();
+    }
+
+    // Loads a glTF file (once) and returns its mesh id, or -1 on failure (the reason goes into assetStatus)
+    int importAsset(const std::string& path) {
+        for (const auto& loaded : loadedAssets)
+            if (loaded.first == path) return (int)loaded.second;
+
+        MeshData md;
+        std::string error;
+        if (!loadGltf(path, md, error)) { assetStatus = "Import failed: " + error; return -1; }
+        uint32_t id = addMesh(md);
+        loadedAssets.push_back({ path, id });
+        loadedAssetDeps.push_back(md.dependencies);
+        for (const std::string& d : md.dependencies) assetWatch.watch(d);
+        assetStatus = "Imported " + md.name + ": " + std::to_string(md.vertices.size()) + " vertices, " +
+                      std::to_string(md.indices.size() / 3) + " triangles, " + std::to_string(md.images.size()) + " texture(s)";
+        for (const std::string& w : md.warnings) assetStatus += "\nWarning: " + w;
+        return (int)id;
+    }
+
+    // An entity using the given mesh, placed 3 units in front of the camera and resting on the floor
+    void spawnMeshEntity(uint32_t meshId) {
+        if (world.size() >= (size_t)MAX_CUBES || meshId >= meshes.size()) return;
+        const MeshInfo& info = meshes[meshId];
+        Entity e = world.create();
+        Vec3 f = cam.forward();
+        Transform t;
+        t.scale = 1.0f;                                           // imported meshes are normalized to a 1-unit box
+        t.position = { cam.position.x + f.x * 3.0f, cam.position.y + f.y * 3.0f, cam.position.z + f.z * 3.0f };
+        t.position.y = std::max(t.position.y, -0.5f - info.bounds.min.y * t.scale);   // don't start below the floor
+        world.add<Transform>(e, t);
+        world.add<MeshRenderer>(e, MeshRenderer{ meshId, 0 });
+        world.add<Name>(e, Name{ info.name + " " + std::to_string(++cubeSerial) });
+        selected = e;
+        cubeCount = (int)world.size();
+    }
+
+    void buildAssets() {
+        int winW, winH;
+        glfwGetWindowSize(window, &winW, &winH);
+        ImGui::SetNextWindowPos(ImVec2(winW * 0.5f - 190.0f, winH - 250.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(380.0f, 240.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowBgAlpha(0.88f);
+        ImGui::Begin("Assets");
+
+        if (glfwGetTime() - lastAssetScan > 2.0) rescanAssets();   // new files show up without a restart
+        ImGui::TextDisabled("assets/ (.gltf, .glb), rescanned every 2 s");
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Rescan")) rescanAssets();
+        ImGui::Separator();
+
+        if (assetFiles.empty()) ImGui::TextDisabled("No glTF files found in assets/");
+        for (size_t i = 0; i < assetFiles.size(); i++) {
+            ImGui::PushID((int)i);
+            if (ImGui::SmallButton("Import + spawn")) {
+                int id = importAsset(assetFiles[i]);
+                if (id >= 0) spawnMeshEntity((uint32_t)id);
+            }
+            ImGui::SameLine();
+            ImGui::TextUnformatted(assetFiles[i].c_str());
+            ImGui::PopID();
+        }
+
+        if (meshes.size() > 2) {
+            ImGui::Separator();
+            ImGui::Text("Imported meshes");
+            for (uint32_t i = 2; i < meshes.size(); i++) {
+                if (meshes[i].retired) continue;
+                ImGui::PushID((int)i);
+                if (ImGui::SmallButton("Spawn")) spawnMeshEntity(i);
+                ImGui::SameLine();
+                ImGui::Text("%s  (%u triangles, %zu submesh%s, %u texture%s)", meshes[i].name.c_str(), meshes[i].indexCount / 3,
+                            meshes[i].subs.size(), meshes[i].subs.size() == 1 ? "" : "es",
+                            meshes[i].textureCount, meshes[i].textureCount == 1 ? "" : "s");
+                ImGui::PopID();
+            }
+        }
+        if (!assetStatus.empty()) { ImGui::Separator(); ImGui::TextWrapped("%s", assetStatus.c_str()); }
+        ImGui::End();
+    }
+
+    // ---------- Inspector panel ----------
+
+    // Editable widgets for each component of the selected entity. The widgets get references straight
+    // into the ECS arrays, so a change is live on the next frame. Structural changes (adding or
+    // removing a component) are applied at the end, after every reference has been used, because
+    // they can move the arrays' memory.
+    void buildInspector() {
+        int winW, winH;
+        glfwGetWindowSize(window, &winW, &winH);
+        ImGui::SetNextWindowPos(ImVec2((float)winW - 330.0f, 400.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowSize(ImVec2(320.0f, 310.0f), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowBgAlpha(0.88f);
+        ImGui::Begin("Inspector");
+
+        if (!selectionValid()) {
+            nameEditing = false;
+            ImGui::TextDisabled("Nothing selected");
+        } else {
+            const Entity e = selected;
+            bool removeSpin = false, removeBob = false, addSpin = false, addBob = false, addName = false;
+
+            ImGui::TextDisabled("Entity %u", e);
+
+            // --- Name ---
+            if (world.has<Name>(e)) {
+                Name& n = world.get<Name>(e);
+                if (!nameEditing) snprintf(nameBuf, sizeof(nameBuf), "%s", n.value.c_str());
+                if (ImGui::InputText("Name", nameBuf, sizeof(nameBuf))) n.value = nameBuf;
+                nameEditing = ImGui::IsItemActive();
+            } else {
+                nameEditing = false;
+                ImGui::TextDisabled("Name: (none)");
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Add name")) addName = true;
+            }
+
+            // --- Transform ---
+            Transform& t = world.get<Transform>(e);
+            if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::DragFloat3("Position", &t.position.x, 0.01f);
+                float yawDeg = t.yaw * 57.2957795f;
+                if (ImGui::DragFloat("Yaw (deg)", &yawDeg, 0.5f)) t.yaw = yawDeg * 0.0174532925f;
+                ImGui::DragFloat("Scale", &t.scale, 0.01f, 0.01f, 10.0f, "%.2f");   // min > 0: picking divides by it
+                if (world.has<Spin>(e)) ImGui::TextDisabled("(Spin is rotating this cube; set its speed to 0 to hold a yaw)");
+                if (world.has<Bob>(e)) ImGui::TextDisabled("(Bob controls Position Y; edit Base Y below)");
+            }
+
+            // --- Mesh ---
+            if (world.has<MeshRenderer>(e)) {
+                MeshRenderer& mr = world.get<MeshRenderer>(e);
+                if (ImGui::CollapsingHeader("Mesh Renderer", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    const char* current = mr.meshId < meshes.size() ? meshes[mr.meshId].name.c_str() : "(missing)";
+                    if (ImGui::BeginCombo("Mesh", current)) {
+                        for (uint32_t i = 0; i < meshes.size(); i++) {
+                            if (meshes[i].retired && i != mr.meshId) continue;
+                            if (i == 1) continue;                    // the floor isn't an entity mesh
+                            if (ImGui::Selectable(meshes[i].name.c_str(), i == mr.meshId)) mr.meshId = i;
+                        }
+                        ImGui::EndCombo();
+                    }
+                    if (mr.meshId < meshes.size()) ImGui::TextDisabled("%u triangles", meshes[mr.meshId].indexCount / 3);
+                }
+            }
+
+            // --- Spin ---
+            if (world.has<Spin>(e)) {
+                bool open = ImGui::CollapsingHeader("Spin", ImGuiTreeNodeFlags_DefaultOpen);
+                if (open) {
+                    Spin& s = world.get<Spin>(e);
+                    ImGui::DragFloat("Speed (rad/s)", &s.speed, 0.05f);
+                    if (ImGui::SmallButton("Remove Spin")) removeSpin = true;
+                }
+            }
+
+            // --- Bob ---
+            if (world.has<Bob>(e)) {
+                if (ImGui::CollapsingHeader("Bob", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    Bob& b = world.get<Bob>(e);
+                    ImGui::DragFloat("Amplitude", &b.amplitude, 0.01f, 0.0f, 5.0f);
+                    ImGui::DragFloat("Frequency", &b.frequency, 0.05f, 0.0f, 20.0f);
+                    ImGui::DragFloat("Base Y", &b.baseY, 0.01f);
+                    ImGui::DragFloat("Phase", &b.phase, 0.05f);
+                    if (ImGui::SmallButton("Remove Bob")) removeBob = true;
+                }
+            }
+
+            // --- Add component ---
+            ImGui::Separator();
+            ImGui::BeginDisabled(world.has<Spin>(e));
+            if (ImGui::Button("+ Spin")) addSpin = true;
+            ImGui::EndDisabled();
+            ImGui::SameLine();
+            ImGui::BeginDisabled(world.has<Bob>(e));
+            if (ImGui::Button("+ Bob")) addBob = true;
+            ImGui::EndDisabled();
+
+            // Structural changes last
+            if (addName)    world.add<Name>(e, Name{ "Cube " + std::to_string(e) });
+            if (addSpin)    world.add<Spin>(e, Spin{ 1.0f });
+            if (addBob)     world.add<Bob>(e, Bob{ 0.15f, 2.0f, world.get<Transform>(e).position.y, 0.0f });
+            if (removeSpin) world.remove<Spin>(e);
+            if (removeBob)  world.remove<Bob>(e);
+        }
+
+        // --- Lights ---
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Lights")) {
+            for (int i = 0; i < 3; i++) {
+                ImGui::PushID(i);
+                EditorLight& l = lightCfg[i];
+                ImGui::Text("Light %d", i);
+                ImGui::DragFloat3("Position", l.pos, 0.02f);
+                ImGui::ColorEdit3("Color", l.color);
+                ImGui::DragFloat("Intensity", &l.intensity, 0.05f, 0.0f, 50.0f);
+                if (i == 2) ImGui::Checkbox("Orbit around position", &light2Orbit);
+                ImGui::PopID();
+                if (i < 2) ImGui::Separator();
+            }
+        }
+
+        ImGui::End();
+    }
+
+    // ---------- Picking ----------
+
+    // Left click (not over the overlay, not while flying the camera) selects the entity under the cursor.
+    void handlePicking() {
+        bool leftDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_LEFT) == GLFW_PRESS;
+        bool clicked = leftDown && !prevLeftDown;       // the frame the button went down
+        prevLeftDown = leftDown;
+
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) selected = NULL_ENTITY;
+        bool saveDown = glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS &&
+                        (glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS);
+        if (saveDown && !prevSaveDown && !looking && !(imguiEnabled && ImGui::GetIO().WantTextInput)) saveScene(scenePath);
+        prevSaveDown = saveDown;
+        bool deleteDown = glfwGetKey(window, GLFW_KEY_DELETE) == GLFW_PRESS;
+        if (deleteDown && !prevDeleteDown && !looking && !(imguiEnabled && ImGui::GetIO().WantTextInput)) deleteSelected();
+        prevDeleteDown = deleteDown;
+
+        // W / E / R pick the gizmo mode (only when not flying the camera or typing in a text box)
+        const int hotkeys[3] = { GLFW_KEY_W, GLFW_KEY_E, GLFW_KEY_R };
+        const ImGuizmo::OPERATION ops[3] = { ImGuizmo::TRANSLATE, ImGuizmo::ROTATE_Y, ImGuizmo::SCALEU };
+        for (int i = 0; i < 3; i++) {
+            bool down = glfwGetKey(window, hotkeys[i]) == GLFW_PRESS;
+            if (down && !prevHotkey[i] && !looking && !(imguiEnabled && ImGui::GetIO().WantTextInput)) gizmoOp = ops[i];
+            prevHotkey[i] = down;
+        }
+        if (!clicked || looking || !havePickMatrix) return;
+        if (imguiEnabled && ImGui::GetIO().WantCaptureMouse) return;
+        if (gizmoOver || gizmoActive) return;           // the click grabbed a gizmo handle, not the scene
+
+        double mx, my;
+        glfwGetCursorPos(window, &mx, &my);
+        int winW, winH;
+        glfwGetWindowSize(window, &winW, &winH);        // same units as the cursor position (not framebuffer pixels)
+        Ray ray = screenToRay(pickInvViewProj, (float)mx, (float)my, (float)winW, (float)winH);
+        std::vector<Aabb> bounds;                         // each mesh's own bounding box, indexed by mesh id
+        bounds.reserve(meshes.size());
+        for (const MeshInfo& m : meshes) bounds.push_back(m.bounds);
+        selected = pickEntity(world, ray, bounds, &selectedDistance);   // clicking empty space clears the selection
     }
 
     // ---------- Debug overlay (Dear ImGui) ----------
@@ -1116,6 +1778,8 @@ private:
         ImGui::CreateContext();
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;            // don't write imgui.ini next to the exe
+        // We switch the cursor to "disabled" while mouse-looking; stop ImGui resetting it every frame
+        io.ConfigFlags |= ImGuiConfigFlags_NoMouseCursorChange;
         ImGui::StyleColorsDark();
 
         ImGui_ImplGlfw_InitForVulkan(window, true);   // true = install GLFW input callbacks
@@ -1151,6 +1815,7 @@ private:
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        ImGuizmo::BeginFrame();
 
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowBgAlpha(0.88f);
@@ -1161,10 +1826,10 @@ private:
             ImGui::PlotLines("##frames", frameHistory, HISTORY, historyPos, nullptr, 0.0f, 20.0f, ImVec2(300, 50));
             ImGui::Text("Entities: %zu cubes", world.size());
             ImGui::Text("Draw calls: %u   Triangles: %u", drawCallsLastFrame,
-                        drawnCubes * (cubeIndexCount / 3) + floorIndexCount / 3);
+                        drawnTriangles + meshes[1].indexCount / 3);
             ImGui::Separator();
             ImGui::Text("CPU frame: %.3f ms   GPU: %.3f ms", smoothCpuMs, smoothGpuMs);
-            ImGui::Text("  spinSystem:      %.3f ms", msSpin);
+            ImGui::Text("  spin + bob:      %.3f ms", msSpin);
             ImGui::Text("  buildDrawList:   %.3f ms", msDrawList);
             ImGui::Text("  instance upload: %.3f ms", msUpload);
         }
@@ -1173,10 +1838,21 @@ private:
             int n = cubeCount;
             if (ImGui::SliderInt("Cubes", &n, 1, MAX_CUBES, "%d", ImGuiSliderFlags_Logarithmic) && n != cubeCount) {
                 cubeCount = n;
+                demoScene = false;
                 spawnScene();
             }
+            if (ImGui::Button("Demo scene (named cubes)")) { demoScene = true; spawnScene(); }
             ImGui::Checkbox("Instanced drawing", &instanced);
             ImGui::Checkbox("Pause simulation", &simPaused);
+
+            ImGui::Separator();
+            ImGui::InputText("File", scenePath, sizeof(scenePath));
+            if (ImGui::Button("Save")) saveScene(scenePath);
+            ImGui::SameLine();
+            if (ImGui::Button("Load")) loadScene(scenePath);
+            ImGui::SameLine();
+            ImGui::TextDisabled("Ctrl+S saves");
+            if (!sceneStatus.empty()) ImGui::TextWrapped("%s", sceneStatus.c_str());
         }
 
         if (ImGui::CollapsingHeader("Debug views", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1184,10 +1860,59 @@ private:
             ImGui::Checkbox("Wireframe", &wireframe);
             if (!wireframeSupported) ImGui::EndDisabled();
             ImGui::Checkbox("Lighting", &lightingOn);
-            ImGui::Checkbox("Freeze camera", &camFrozen);
+            {
+                const char* modes[] = { "Nearest", "Bilinear (no mipmaps)", "Trilinear (mipmaps)" };
+                bool changed = ImGui::Combo("Texture filter", &filterMode, modes, 3);
+                const bool anisoOk = maxAnisotropy > 1.0f && filterMode != 0;
+                if (!anisoOk) ImGui::BeginDisabled();
+                int maxA = (int)maxAnisotropy;
+                if (ImGui::SliderInt("Anisotropy", &anisotropy, 1, std::max(maxA, 1), "%dx")) changed = true;
+                if (!anisoOk) ImGui::EndDisabled();
+                if (changed) changeSampler();
+            }
+            ImGui::Checkbox("Auto-sway camera (demo)", &camAutoSway);
+        }
+
+        if (ImGui::CollapsingHeader("Hot reload", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Checkbox("Watch shaders and assets", &hotReload);
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Reload shaders now")) reloadShaders({ "shaders/mesh.vert", "shaders/mesh.frag" });
+            ImGui::TextWrapped("%s", shaderStatus.c_str());
+        }
+
+        if (ImGui::CollapsingHeader("Gizmo", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (ImGui::RadioButton("Move (W)", gizmoOp == ImGuizmo::TRANSLATE)) gizmoOp = ImGuizmo::TRANSLATE;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Rotate (E)", gizmoOp == ImGuizmo::ROTATE_Y)) gizmoOp = ImGuizmo::ROTATE_Y;
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Scale (R)", gizmoOp == ImGuizmo::SCALEU)) gizmoOp = ImGuizmo::SCALEU;
+            ImGui::Checkbox("Snap (0.1 units / 15 deg / 0.1 scale)", &gizmoSnap);
+            ImGui::TextDisabled("Rotation is yaw only: the Transform has no pitch or roll");
+        }
+
+        if (ImGui::CollapsingHeader("Selection", ImGuiTreeNodeFlags_DefaultOpen)) {
+            if (selected != NULL_ENTITY && world.alive(selected) && world.has<Transform>(selected)) {
+                const char* name = world.has<Name>(selected) ? world.get<Name>(selected).value.c_str() : "(unnamed)";
+                ImGui::Text("%s   (entity %u)", name, selected);
+                if (selectedDistance > 0.0f) ImGui::Text("Picked at distance %.2f", selectedDistance);
+                if (ImGui::Button("Clear selection")) selected = NULL_ENTITY;
+            } else {
+                ImGui::TextDisabled("Click a cube, or a row in the Hierarchy (Esc clears, Del deletes)");
+            }
+        }
+
+        if (ImGui::CollapsingHeader("Camera", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::Text("Hold right mouse: look, then WASD move, Q/E down/up, Shift = fast");
+            ImGui::Text("Position: %.2f  %.2f  %.2f", cam.position.x, cam.position.y, cam.position.z);
+            ImGui::SliderFloat("Move speed", &cam.moveSpeed, 0.2f, 20.0f, "%.1f", ImGuiSliderFlags_Logarithmic);
+            if (ImGui::Button("Reset camera")) cam = FlyCamera();
         }
 
         ImGui::End();
+        buildHierarchy();
+        buildInspector();
+        buildAssets();
+        buildGizmo();
         ImGui::Render();
     }
 
@@ -1212,6 +1937,8 @@ private:
     // (Re)build the world: one entity per cube. Components: where it is, how it spins, what to draw.
     void spawnScene() {
         world = Registry();
+        selected = NULL_ENTITY;
+        if (demoScene) { spawnDemoScene(); return; }
         if (cubeCount > MAX_CUBES) cubeCount = MAX_CUBES;
         int n = cubeCount;
         for (int i = 0; i < n; i++) {
@@ -1233,18 +1960,244 @@ private:
         lastSimTime = glfwGetTime();
     }
 
+    // ---------- Hot reload (Step 6.4) ----------
+
+    // Where glslc lives: $VULKAN_SDK/Bin (or bin) if that variable is set, otherwise whatever is on the PATH
+    static std::string findGlslc() {
+        std::string sdk;
+#ifdef _WIN32
+        char* buf = nullptr;
+        size_t len = 0;
+        if (_dupenv_s(&buf, &len, "VULKAN_SDK") == 0 && buf) { sdk = buf; free(buf); }
+#else
+        if (const char* v = std::getenv("VULKAN_SDK")) sdk = v;
+#endif
+        if (!sdk.empty()) {
+            for (const char* dir : { "Bin", "bin" })
+                for (const char* exe : { "glslc.exe", "glslc" }) {
+                    std::filesystem::path p = std::filesystem::path(sdk) / dir / exe;
+                    if (std::filesystem::exists(p)) return p.string();
+                }
+        }
+        return "glslc";
+    }
+
+    // Runs glslc on one shader source. On failure `log` holds the compiler's messages.
+    bool compileShader(const std::string& src, std::string& log) {
+        const std::string out = src + ".spv";
+        const std::string logFile = (std::filesystem::temp_directory_path() / "toyengine_glslc.log").string();
+        std::string cmd = "\"" + findGlslc() + "\" \"" + src + "\" -o \"" + out + "\" > \"" + logFile + "\" 2>&1";
+#ifdef _WIN32
+        cmd = "\"" + cmd + "\"";       // cmd.exe strips the first and last quote of the line unless the whole thing is wrapped
+#endif
+        int rc = std::system(cmd.c_str());
+        std::ifstream f(logFile);
+        log.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        if (log.size() > 1500) log.resize(1500), log += "...";
+        return rc == 0;
+    }
+
+    // A shader source and/or its .spv changed on disk. Sources are recompiled with glslc (a change to just the
+    // .spv means someone else, e.g. the CMake build, already compiled it); then the pipelines are rebuilt.
+    void reloadShaders(const std::vector<std::string>& changed) {
+        for (const std::string& p : changed) {
+            if (p.size() > 4 && p.compare(p.size() - 4, 4, ".spv") == 0) continue;
+            std::string log;
+            if (!compileShader(p, log)) {
+                shaderStatus = "Compile failed (" + p + "), keeping the old shaders:\n" + log;
+                return;
+            }
+            shaderWatch.acknowledge(p + ".spv");       // we just wrote it; no second reload for our own output
+        }
+        std::string error;
+        if (createGraphicsPipeline(error)) {
+            shaderReloads++;
+            shaderStatus = "Shaders reloaded (#" + std::to_string(shaderReloads) + ")";
+        } else {
+            shaderStatus = "Reload failed, keeping the old shaders: " + error;
+        }
+    }
+
+    // A model file or one of its textures changed: import it again and swap the new mesh in under the same
+    // entities. The old mesh stays in the GPU buffers (marked retired) until the app restarts; for an editor
+    // session that is a few MB per reload.
+    void reloadAsset(size_t k) {
+        const std::string path = loadedAssets[k].first;
+        MeshData md;
+        std::string error;
+        if (!loadGltf(path, md, error)) { assetStatus = "Reload of " + path + " failed, keeping the old one: " + error; return; }
+
+        const uint32_t oldId = loadedAssets[k].second;
+        const uint32_t newId = addMesh(md);
+        meshes[oldId].retired = true;
+        loadedAssets[k].second = newId;
+        loadedAssetDeps[k] = md.dependencies;
+        for (const std::string& d : md.dependencies) assetWatch.watch(d);
+        world.each<MeshRenderer>([&](Entity, MeshRenderer& mr) { if (mr.meshId == oldId) mr.meshId = newId; });
+        assetStatus = "Reloaded " + path + ": " + std::to_string(md.vertices.size()) + " vertices, " +
+                      std::to_string(md.images.size()) + " texture(s)";
+        for (const std::string& w : md.warnings) assetStatus += "\nWarning: " + w;
+    }
+
+    void pollHotReload() {
+        if (!imguiEnabled || !hotReload) return;
+        double now = glfwGetTime();
+        if (now - lastHotPoll < 0.5) return;
+        lastHotPoll = now;
+
+        std::vector<std::string> shaderChanges = shaderWatch.poll();
+        if (!shaderChanges.empty()) reloadShaders(shaderChanges);
+
+        std::vector<std::string> assetChanges = assetWatch.poll();
+        if (assetChanges.empty()) return;
+        std::vector<bool> dirty(loadedAssets.size(), false);
+        for (const std::string& p : assetChanges)
+            for (size_t k = 0; k < loadedAssetDeps.size(); k++)
+                for (const std::string& d : loadedAssetDeps[k]) if (d == p) dirty[k] = true;
+        for (size_t k = 0; k < dirty.size(); k++) if (dirty[k]) reloadAsset(k);
+    }
+
+    // ---------- Scene save / load (Step 5.6) ----------
+
+    // Mesh ids depend on import order, so scenes store names: "builtin:cube" or the asset's file path
+    std::string meshKey(uint32_t id) const {
+        if (id == 1) return "builtin:floor";
+        for (const auto& l : loadedAssets) if (l.second == id) return l.first;
+        return "builtin:cube";
+    }
+
+    int meshResolve(const std::string& key) {
+        if (key == "builtin:cube") return 0;
+        if (key == "builtin:floor") return 1;
+        return importAsset(key);       // imports the file if this run hasn't loaded it yet; -1 if it can't
+    }
+
+    bool saveScene(const std::string& path) {
+        sceneio::json doc = sceneio::newSceneDoc();
+        doc["camera"] = { { "position", sceneio::toJson(cam.position) }, { "yaw", sceneio::f(cam.yaw) }, { "pitch", sceneio::f(cam.pitch) } };
+        sceneio::json lights = sceneio::json::array();
+        for (const EditorLight& l : lightCfg)
+            lights.push_back({ { "position", sceneio::toJson({ l.pos[0], l.pos[1], l.pos[2] }) },
+                               { "color", sceneio::toJson({ l.color[0], l.color[1], l.color[2] }) },
+                               { "intensity", sceneio::f(l.intensity) } });
+        doc["lights"] = { { "list", lights }, { "orbitLight2", light2Orbit } };
+        doc["entities"] = sceneio::entitiesToJson(world, [this](uint32_t id) { return meshKey(id); });
+
+        std::string err;
+        if (!sceneio::writeSceneFile(path, doc, err)) { sceneStatus = "Save failed: " + err; return false; }
+        sceneStatus = "Saved " + std::to_string(world.size()) + " entities to " + path;
+        return true;
+    }
+
+    // All-or-nothing: the file is parsed into temporaries and only applied if every part was valid,
+    // so a bad file leaves the current scene untouched.
+    bool loadScene(const std::string& path) {
+        sceneio::json doc;
+        std::string err;
+        if (!sceneio::readSceneFile(path, doc, err)) { sceneStatus = "Load failed: " + err; return false; }
+
+        Registry fresh;
+        std::vector<std::string> warnings;
+        FlyCamera newCam = cam;
+        EditorLight newLights[3];
+        for (int i = 0; i < 3; i++) newLights[i] = lightCfg[i];
+        bool newOrbit = light2Orbit;
+        try {
+            if (!doc.contains("entities")) throw std::runtime_error("no 'entities' section");
+            sceneio::entitiesFromJson(doc["entities"], fresh, [this](const std::string& k) { return meshResolve(k); },
+                                      (size_t)MAX_CUBES, warnings);
+            if (auto c = doc.find("camera"); c != doc.end()) {
+                if (auto p = c->find("position"); p != c->end()) newCam.position = sceneio::toVec3(*p);
+                newCam.yaw = sceneio::numOr(*c, "yaw", newCam.yaw);
+                newCam.pitch = sceneio::numOr(*c, "pitch", newCam.pitch);
+            }
+            if (auto l = doc.find("lights"); l != doc.end()) {
+                if (auto list = l->find("list"); list != l->end()) {
+                    if (!list->is_array()) throw std::runtime_error("'lights.list' must be an array");
+                    for (size_t i = 0; i < list->size() && i < 3; i++) {
+                        const sceneio::json& lj = (*list)[i];
+                        if (lj.contains("position")) { Vec3 v = sceneio::toVec3(lj["position"]); newLights[i].pos[0] = v.x; newLights[i].pos[1] = v.y; newLights[i].pos[2] = v.z; }
+                        if (lj.contains("color")) { Vec3 v = sceneio::toVec3(lj["color"]); newLights[i].color[0] = v.x; newLights[i].color[1] = v.y; newLights[i].color[2] = v.z; }
+                        newLights[i].intensity = sceneio::numOr(lj, "intensity", newLights[i].intensity);
+                    }
+                }
+                newOrbit = l->value("orbitLight2", newOrbit);
+            }
+        } catch (const std::exception& ex) {
+            sceneStatus = std::string("Load failed: ") + ex.what();
+            return false;
+        }
+
+        world = std::move(fresh);
+        selected = NULL_ENTITY;
+        gizmoActive = false;
+        demoScene = false;
+        cam = newCam;
+        for (int i = 0; i < 3; i++) lightCfg[i] = newLights[i];
+        light2Orbit = newOrbit;
+        cubeCount = (int)world.size();
+        cubeSerial = (int)world.size();
+        lastSimTime = glfwGetTime();
+        sceneStatus = "Loaded " + std::to_string(world.size()) + " entities from " + path;
+        for (const std::string& w : warnings) sceneStatus += "\nWarning: " + w;
+        return true;
+    }
+
+    // A handful of named cubes of different sizes and spin speeds: something to click on.
+    void spawnDemoScene() {
+        struct Demo { const char* name; Vec3 pos; float scale; float spin; };
+        const Demo demo[] = {
+            { "Spinner",     {  0.00f,  0.00f, -1.5f }, 1.0f,  1.0f },   // the original cube
+            { "Small Cube",  { -0.70f, -0.35f, -1.0f }, 0.3f,  2.5f },
+            { "Mini",        {  0.75f, -0.40f, -0.8f }, 0.2f,  3.0f },
+            { "Big Block",   {  0.70f, -0.15f, -3.0f }, 0.7f,  0.4f },
+            { "Far Cube",    { -0.50f, -0.30f, -3.6f }, 0.4f, -1.2f },
+        };
+        for (const Demo& d : demo) {
+            Entity e = world.create();
+            Transform t;
+            t.position = d.pos;
+            t.scale = d.scale;
+            world.add<Transform>(e, t);
+            world.add<Spin>(e, Spin{ d.spin });
+            world.add<MeshRenderer>(e, MeshRenderer{ 0, 0 });
+            world.add<Name>(e, Name{ d.name });
+        }
+        cubeCount = (int)world.size();
+        lastSimTime = glfwGetTime();
+    }
+
     // The CPU side of a frame: run the systems, build the draw list, upload it.
     void simulateAndUpload(uint32_t frame) {
         double now = glfwGetTime();
         float dt = (float)std::min(now - lastSimTime, 0.1);   // clamp so a stall can't make cubes jump
         lastSimTime = now;
-        if (simPaused) dt = 0.0f;
+        if (simPaused || gizmoActive) dt = 0.0f;   // the scene holds still while a gizmo is being dragged
+        simTime += dt;
 
         double t0 = glfwGetTime();
         spinSystem(world, dt);
+        bobSystem(world, simTime);
         double t1 = glfwGetTime();
-        buildDrawList(world, drawList);
+        buildDrawList(world, drawList, selected);
         drawnCubes = (uint32_t)drawList.size();
+
+        // Group by mesh so each mesh is one instanced draw. When everything is the same mesh (the common
+        // benchmark case) the list is already sorted and this is just one pass over it.
+        for (DrawItem& d : drawList) if (d.meshId >= meshes.size()) d.meshId = 0;     // unknown mesh id -> cube
+        auto byMesh = [](const DrawItem& a, const DrawItem& b) { return a.meshId < b.meshId; };
+        if (!std::is_sorted(drawList.begin(), drawList.end(), byMesh))
+            std::stable_sort(drawList.begin(), drawList.end(), byMesh);
+        drawRanges.clear();
+        drawnTriangles = 0;
+        for (uint32_t i = 0; i < drawnCubes; i++) {
+            if (drawRanges.empty() || drawRanges.back().mesh != drawList[i].meshId)
+                drawRanges.push_back({ drawList[i].meshId, i, 1 });
+            else
+                drawRanges.back().count++;
+        }
+        for (const DrawRange& r : drawRanges) drawnTriangles += r.count * (meshes[r.mesh].indexCount / 3);
+
         drawList.push_back(DrawItem{ Mat4::identity(), 1, 0 });   // the floor (not an entity yet)
         double t2 = glfwGetTime();
 
@@ -1268,6 +2221,248 @@ private:
         info.pBindings = &b;
         if (vkCreateDescriptorSetLayout(device, &info, nullptr, &descriptorSetLayout) != VK_SUCCESS)
             throw std::runtime_error("Failed to create descriptor set layout");
+
+        // Set 1: the material (base color texture), bound per submesh
+        VkDescriptorSetLayoutBinding mb{};
+        mb.binding = 0;
+        mb.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        mb.descriptorCount = 1;
+        mb.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        VkDescriptorSetLayoutCreateInfo minfo{};
+        minfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+        minfo.bindingCount = 1;
+        minfo.pBindings = &mb;
+        if (vkCreateDescriptorSetLayout(device, &minfo, nullptr, &materialSetLayout) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create material set layout");
+    }
+
+    // ---------- Textures & materials ----------
+
+    VkCommandBuffer beginOneTime() {
+        VkCommandBufferAllocateInfo ai{};
+        ai.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        ai.commandPool = commandPool;
+        ai.commandBufferCount = 1;
+        VkCommandBuffer cmd;
+        vkAllocateCommandBuffers(device, &ai, &cmd);
+        VkCommandBufferBeginInfo begin{};
+        begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        vkBeginCommandBuffer(cmd, &begin);
+        return cmd;
+    }
+
+    void endOneTime(VkCommandBuffer cmd) {
+        vkEndCommandBuffer(cmd);
+        VkSubmitInfo submit{};
+        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &cmd;
+        vkQueueSubmit(graphicsQueue, 1, &submit, VK_NULL_HANDLE);
+        vkQueueWaitIdle(graphicsQueue);
+        vkFreeCommandBuffers(device, commandPool, 1, &cmd);
+    }
+
+    // Uploads RGBA8 pixels as a sampled sRGB texture (the GPU converts to linear when sampling) and returns its index
+    uint32_t createTexture(const uint8_t* rgba, uint32_t w, uint32_t h) {
+        VkDeviceSize size = (VkDeviceSize)w * h * 4;
+        VkBuffer staging;
+        VkDeviceMemory stagingMem;
+        createBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                     VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, staging, stagingMem);
+        void* mapped;
+        vkMapMemory(device, stagingMem, 0, size, 0, &mapped);
+        memcpy(mapped, rgba, (size_t)size);
+        vkUnmapMemory(device, stagingMem);
+
+        // Mip chain: each level is half the size of the one above, down to 1x1. Built on the GPU with
+        // blits, which needs linear-blit support for the format (virtually every GPU has it).
+        VkFormatProperties fp;
+        vkGetPhysicalDeviceFormatProperties(physicalDevice, VK_FORMAT_R8G8B8A8_SRGB, &fp);
+        const VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT |
+                                            VK_FORMAT_FEATURE_BLIT_SRC_BIT | VK_FORMAT_FEATURE_BLIT_DST_BIT;
+        const bool canBlit = (fp.optimalTilingFeatures & needed) == needed;
+
+        GpuTexture tex;
+        tex.mipLevels = 1;
+        if (canBlit) {
+            uint32_t largest = std::max(w, h);
+            while (largest > 1) { largest >>= 1; tex.mipLevels++; }
+        }
+        const uint32_t mips = tex.mipLevels;
+        VkImageCreateInfo ii{};
+        ii.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        ii.imageType = VK_IMAGE_TYPE_2D;
+        ii.extent = { w, h, 1 };
+        ii.mipLevels = mips;
+        ii.arrayLayers = 1;
+        ii.format = VK_FORMAT_R8G8B8A8_SRGB;
+        ii.tiling = VK_IMAGE_TILING_OPTIMAL;
+        ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        ii.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        ii.samples = VK_SAMPLE_COUNT_1_BIT;
+        ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (vkCreateImage(device, &ii, nullptr, &tex.image) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create texture image");
+        VkMemoryRequirements req;
+        vkGetImageMemoryRequirements(device, tex.image, &req);
+        VkMemoryAllocateInfo alloc{};
+        alloc.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        alloc.allocationSize = req.size;
+        alloc.memoryTypeIndex = findMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (vkAllocateMemory(device, &alloc, nullptr, &tex.memory) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate texture memory");
+        vkBindImageMemory(device, tex.image, tex.memory, 0);
+
+        // UNDEFINED -> TRANSFER_DST, copy the pixels, TRANSFER_DST -> SHADER_READ_ONLY
+        VkCommandBuffer cmd = beginOneTime();
+        VkImageMemoryBarrier barrier{};
+        barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = tex.image;
+        barrier.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1 };   // every level: ready to be written
+        barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.srcAccessMask = 0;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &barrier);
+        VkBufferImageCopy copy{};
+        copy.imageSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1 };
+        copy.imageExtent = { w, h, 1 };
+        vkCmdCopyBufferToImage(cmd, staging, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+        // Level 0 now holds the pixels. For each next level: finish the previous one (DST -> SRC), blit it down to
+        // half size, then hand the previous level over to the shader.
+        int32_t mw = (int32_t)w, mh = (int32_t)h;
+        for (uint32_t i = 1; i < mips; i++) {
+            barrier.subresourceRange.baseMipLevel = i - 1;
+            barrier.subresourceRange.levelCount = 1;
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                                 0, nullptr, 0, nullptr, 1, &barrier);
+
+            int32_t nw = std::max(mw / 2, 1), nh = std::max(mh / 2, 1);
+            VkImageBlit blit{};
+            blit.srcSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i - 1, 0, 1 };
+            blit.srcOffsets[1] = { mw, mh, 1 };
+            blit.dstSubresource = { VK_IMAGE_ASPECT_COLOR_BIT, i, 0, 1 };
+            blit.dstOffsets[1] = { nw, nh, 1 };
+            vkCmdBlitImage(cmd, tex.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+            barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+            barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                                 0, nullptr, 0, nullptr, 1, &barrier);
+            mw = nw;
+            mh = nh;
+        }
+        // The last level (which is level 0 for a 1x1 texture) was only ever written to
+        barrier.subresourceRange.baseMipLevel = mips - 1;
+        barrier.subresourceRange.levelCount = 1;
+        barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+                             0, nullptr, 0, nullptr, 1, &barrier);
+        endOneTime(cmd);
+        vkDestroyBuffer(device, staging, nullptr);
+        vkFreeMemory(device, stagingMem, nullptr);
+
+        VkImageViewCreateInfo vi{};
+        vi.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        vi.image = tex.image;
+        vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        vi.format = ii.format;
+        vi.subresourceRange = { VK_IMAGE_ASPECT_COLOR_BIT, 0, mips, 0, 1 };
+        if (vkCreateImageView(device, &vi, nullptr, &tex.view) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create texture view");
+        textures.push_back(tex);
+        return (uint32_t)textures.size() - 1;
+    }
+
+    // A material = a descriptor set pointing at one texture. Returns its index (0, the default, if the pool is full).
+    uint32_t createMaterial(uint32_t textureIndex) {
+        if (materialSets.size() >= MAX_MATERIALS) return 0;
+        VkDescriptorSetAllocateInfo alloc{};
+        alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+        alloc.descriptorPool = materialPool;
+        alloc.descriptorSetCount = 1;
+        alloc.pSetLayouts = &materialSetLayout;
+        VkDescriptorSet set;
+        if (vkAllocateDescriptorSets(device, &alloc, &set) != VK_SUCCESS)
+            throw std::runtime_error("Failed to allocate material descriptor set");
+        VkDescriptorImageInfo img{ textureSampler, textures[textureIndex].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet w{};
+        w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w.dstSet = set;
+        w.dstBinding = 0;
+        w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        w.descriptorCount = 1;
+        w.pImageInfo = &img;
+        vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+        materialSets.push_back(set);
+        materialTexture.push_back(textureIndex);
+        return (uint32_t)materialSets.size() - 1;
+    }
+
+    // Sampler, descriptor pool, and material 0 (white). Needs the command pool (texture uploads).
+    // (Re)creates the shared sampler from filterMode / anisotropy. All three modes are a sampler setting, not a
+    // texture one, so switching is instant and the same texture data shows the difference.
+    void createSampler() {
+        VkSamplerCreateInfo si{};
+        si.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        const bool nearest = filterMode == 0;
+        si.magFilter = si.minFilter = nearest ? VK_FILTER_NEAREST : VK_FILTER_LINEAR;
+        si.mipmapMode = nearest ? VK_SAMPLER_MIPMAP_MODE_NEAREST : VK_SAMPLER_MIPMAP_MODE_LINEAR;
+        si.addressModeU = si.addressModeV = si.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        si.minLod = 0.0f;
+        si.maxLod = filterMode == 2 ? VK_LOD_CLAMP_NONE : 0.0f;    // maxLod 0 = never leave the full-size level
+        si.anisotropyEnable = (maxAnisotropy > 1.0f && filterMode != 0 && anisotropy > 1) ? VK_TRUE : VK_FALSE;
+        si.maxAnisotropy = std::min((float)anisotropy, maxAnisotropy);
+        if (vkCreateSampler(device, &si, nullptr, &textureSampler) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create sampler");
+    }
+
+    // Swap the sampler while the app runs: wait for the GPU, then point every material at the new one
+    void changeSampler() {
+        vkDeviceWaitIdle(device);
+        vkDestroySampler(device, textureSampler, nullptr);
+        createSampler();
+        for (size_t i = 0; i < materialSets.size(); i++) {
+            VkDescriptorImageInfo img{ textureSampler, textures[materialTexture[i]].view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+            VkWriteDescriptorSet w{};
+            w.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            w.dstSet = materialSets[i];
+            w.dstBinding = 0;
+            w.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+            w.descriptorCount = 1;
+            w.pImageInfo = &img;
+            vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
+        }
+    }
+
+    void createTextureResources() {
+        createSampler();
+
+        VkDescriptorPoolSize ps{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, MAX_MATERIALS };
+        VkDescriptorPoolCreateInfo pi{};
+        pi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pi.poolSizeCount = 1;
+        pi.pPoolSizes = &ps;
+        pi.maxSets = MAX_MATERIALS;
+        if (vkCreateDescriptorPool(device, &pi, nullptr, &materialPool) != VK_SUCCESS)
+            throw std::runtime_error("Failed to create material descriptor pool");
+
+        const uint8_t white[4] = { 255, 255, 255, 255 };
+        createMaterial(createTexture(white, 1, 1));    // material 0
     }
 
     void createUniformBuffers() {
@@ -1318,20 +2513,24 @@ private:
 
     void updateUniformBuffer(uint32_t frame) {
         float t = (float)glfwGetTime();
+        // Benchmarks use the same fixed camera as always. Otherwise: the free-fly camera,
+        // or (optional demo mode) the gentle automatic sway around the scene.
+        const Vec3 target = { 0, -0.3f, -3.0f };
         Vec3 eye = { 0, 0.8f, 1.0f };
-
-        // Gentle camera sway around the scene (interactive mode only; benchmarks keep a fixed camera).
-        // camTime stops advancing when the camera is frozen, so unfreezing resumes smoothly.
-        if (!benchMode) {
-            if (!camFrozen) camTime += (float)frameDt;
+        Mat4 view;
+        if (benchMode) {
+            view = Mat4::lookAt(eye, target, { 0, 1, 0 });
+        } else if (camAutoSway) {
+            camTime += (float)frameDt;
             float angle = 0.35f * std::sin(camTime * 0.5f);
-            const Vec3 target = { 0, -0.3f, -3.0f };
             float dx = eye.x - target.x, dz = eye.z - target.z;
             eye.x = target.x + dx * std::cos(angle) + dz * std::sin(angle);
             eye.z = target.z - dx * std::sin(angle) + dz * std::cos(angle);
+            view = Mat4::lookAt(eye, target, { 0, 1, 0 });
+        } else {
+            eye = cam.position;
+            view = cam.view();
         }
-
-        Mat4 view = Mat4::lookAt(eye, { 0, -0.3f, -3.0f }, { 0, 1, 0 });
         Mat4 proj = Mat4::perspective(3.14159265f / 4.0f,
                                       (float)swapchainExtent.width / swapchainExtent.height, 0.1f, 100.0f);
 
@@ -1342,17 +2541,23 @@ private:
         fix.m[2][2] = 0.5f;
         fix.m[3][2] = 0.5f;
 
+        lastView = view;
+        lastProj = proj;
+        pickInvViewProj = (proj * view).inverse();   // for turning mouse clicks into world-space rays
+        havePickMatrix = true;
+
         SceneUBO ubo{};
         ubo.viewProj = fix * proj * view;
         ubo.cameraPos[0] = eye.x; ubo.cameraPos[1] = eye.y; ubo.cameraPos[2] = eye.z;
 
-        // Light 0: warm white, upper right, in front of the scene
-        ubo.lights[0] = { { 1.5f, 1.5f, 0.0f, 1.0f }, { 1.0f, 0.9f, 0.75f, 4.0f } };
-        // Light 1: cool blue fill from the far left
-        ubo.lights[1] = { { -1.8f, 1.0f, -2.5f, 1.0f }, { 0.4f, 0.6f, 1.0f, 3.0f } };
-        // Light 2: orbits the cube, so you can watch the lighting respond to movement
-        ubo.lights[2] = { { std::sin(t * 1.2f) * 1.3f, 0.7f, -1.5f + std::cos(t * 1.2f) * 1.3f, 1.0f },
-                          { 1.0f, 0.35f, 0.3f, 3.0f } };
+        // Lights come from lightCfg (editable in the Inspector). Light 2 can orbit its position,
+        // so you can watch the lighting respond to movement.
+        for (int i = 0; i < 3; i++) {
+            const EditorLight& l = lightCfg[i];
+            float px = l.pos[0], py = l.pos[1], pz = l.pos[2];
+            if (i == 2 && light2Orbit) { px += std::sin(t * 1.2f) * 1.3f; pz += std::cos(t * 1.2f) * 1.3f; }
+            ubo.lights[i] = { { px, py, pz, 1.0f }, { l.color[0], l.color[1], l.color[2], l.intensity } };
+        }
         ubo.info[0] = 3;
         ubo.info[1] = lightingOn ? 1 : 0;
 
@@ -1405,6 +2610,7 @@ private:
         double frameStart = glfwGetTime();
         frameDt = frameStart - prevFrameTime;
         prevFrameTime = frameStart;
+        if (!benchMode) { updateCamera(); handlePicking(); }
 
         // 1. Wait until the GPU is done with the previous use of this frame slot
         vkWaitForFences(device, 1, &inFlightFences[currentFrame], VK_TRUE, UINT64_MAX);

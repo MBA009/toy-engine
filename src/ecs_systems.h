@@ -31,9 +31,11 @@ inline void bobSystem(Registry& r, float time) {
 
 // Render preparation: one DrawItem per drawable entity. This is what the Vulkan
 // renderer will consume in Step 3.4 (one push-constant model matrix per item).
-inline void buildDrawList(Registry& r, std::vector<DrawItem>& out) {
+// The selected entity (if any) gets DRAWFLAG_SELECTED so the shader can highlight it.
+inline void buildDrawList(Registry& r, std::vector<DrawItem>& out, Entity selected = NULL_ENTITY) {
     out.clear();
-    r.each<MeshRenderer, Transform>([&out](Entity, MeshRenderer& m, Transform& t) {
-        out.push_back(DrawItem{ modelMatrix(t), m.meshId, m.materialId });
+    r.each<MeshRenderer, Transform>([&out, selected](Entity e, MeshRenderer& m, Transform& t) {
+        out.push_back(DrawItem{ modelMatrix(t), m.meshId,
+                                m.materialId | (e == selected ? DRAWFLAG_SELECTED : 0u) });
     });
 }
