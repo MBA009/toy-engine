@@ -1,0 +1,13 @@
+[1mdiff --git a/README.md b/README.md[m
+[1mindex 1444973..704efb5 100644[m
+[1m--- a/README.md[m
+[1m+++ b/README.md[m
+[36m@@ -90,7 +90,3 @@[m [mcmake --build build[m
+ ## Demo[m
+ [m
+ *(A short demo video will be linked here once Phase 9 is complete.)*[m
+[31m-[m
+[31m-## License[m
+[31m-[m
+[31m-*(Add a license, e.g. MIT, once you're ready to make the repo public.)*[m
+\ No newline at end of file[m

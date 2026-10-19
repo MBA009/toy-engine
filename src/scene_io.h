@@ -88,6 +88,23 @@ inline json entitiesToJson(Registry& reg, const MeshKeyFn& meshKey) {
             o["bob"] = { { "amplitude", f(b.amplitude) }, { "frequency", f(b.frequency) }, { "baseY", f(b.baseY) }, { "phase", f(b.phase) } };
         }
         if (reg.has<Velocity>(e)) o["velocity"] = toJson(reg.get<Velocity>(e).value);
+        if (reg.has<AIAgent>(e)) {      // the current path is not saved: agents come back idle
+            const AIAgent& a = reg.get<AIAgent>(e);
+            o["agent"] = { { "speed", f(a.moveSpeed) }, { "turnSpeed", f(a.turnSpeed) }, { "footOffset", f(a.footOffset) } };
+        }
+        if (reg.has<Health>(e)) o["health"] = { { "current", f(reg.get<Health>(e).current) }, { "max", f(reg.get<Health>(e).max) } };
+        if (reg.has<Player>(e)) o["player"] = true;
+        if (reg.has<Goal>(e)) o["goal"] = { { "radius", f(reg.get<Goal>(e).radius) } };
+        if (reg.has<StartPad>(e)) o["start"] = { { "radius", f(reg.get<StartPad>(e).radius) } };
+        if (reg.has<AIBrain>(e)) {
+            const AIBrain& b = reg.get<AIBrain>(e);
+            json patrol = json::array();
+            for (const Vec3& p : b.patrol) patrol.push_back(toJson(p));
+            o["brain"] = { { "detectRange", f(b.detectRange) }, { "contactRange", f(b.contactRange) }, { "fleeBelow", f(b.fleeBelow) },
+                           { "recoverAt", f(b.recoverAt) }, { "contactDamage", f(b.contactDamage) }, { "attackDamage", f(b.attackDamage) }, { "regenPerSecond", f(b.regenPerSecond) },
+                           { "patrolWait", f(b.patrolWait) }, { "patrol", patrol } };
+        }
+        if (reg.has<NavSource>(e)) o["nav"] = reg.get<NavSource>(e).mode == NAV_GEOMETRY ? "geometry" : "obstacle";
         list.push_back(std::move(o));
     }
     return list;
@@ -141,6 +158,41 @@ inline void entitiesFromJson(const json& list, Registry& out, const MeshResolveF
                 out.add<Bob>(e, b);
             }
             if (auto it = o.find("velocity"); it != o.end()) out.add<Velocity>(e, Velocity{ toVec3(*it) });
+            if (auto it = o.find("agent"); it != o.end()) {
+                AIAgent a;
+                a.moveSpeed = numOr(*it, "speed", a.moveSpeed);
+                a.turnSpeed = numOr(*it, "turnSpeed", a.turnSpeed);
+                a.footOffset = numOr(*it, "footOffset", a.footOffset);
+                out.add<AIAgent>(e, a);
+            }
+            if (auto it = o.find("health"); it != o.end()) {
+                Health h;
+                h.max = numOr(*it, "max", h.max);
+                h.current = numOr(*it, "current", h.max);
+                out.add<Health>(e, h);
+            }
+            if (auto it = o.find("goal"); it != o.end()) out.add<Goal>(e, Goal{ numOr(*it, "radius", 0.4f) });
+            if (auto it = o.find("start"); it != o.end()) out.add<StartPad>(e, StartPad{ numOr(*it, "radius", 0.4f) });
+            if (auto it = o.find("player"); it != o.end() && it->is_boolean() && it->get<bool>()) out.add<Player>(e, Player{});
+            if (auto it = o.find("brain"); it != o.end()) {
+                AIBrain br;
+                br.detectRange = numOr(*it, "detectRange", br.detectRange);
+                br.contactRange = numOr(*it, "contactRange", br.contactRange);
+                br.fleeBelow = numOr(*it, "fleeBelow", br.fleeBelow);
+                br.recoverAt = numOr(*it, "recoverAt", br.recoverAt);
+                br.contactDamage = numOr(*it, "contactDamage", br.contactDamage);
+                br.attackDamage = numOr(*it, "attackDamage", br.attackDamage);
+                br.regenPerSecond = numOr(*it, "regenPerSecond", br.regenPerSecond);
+                br.patrolWait = numOr(*it, "patrolWait", br.patrolWait);
+                if (auto p = it->find("patrol"); p != it->end() && p->is_array())
+                    for (const auto& v : *p) br.patrol.push_back(toVec3(v));
+                out.add<AIBrain>(e, br);
+            }
+            if (auto it = o.find("nav"); it != o.end()) {
+                const std::string mode = it->is_string() ? it->get<std::string>() : std::string();
+                if (mode != "obstacle" && mode != "geometry") throw std::runtime_error("'nav' must be \"obstacle\" or \"geometry\"");
+                out.add<NavSource>(e, NavSource{ mode == "geometry" ? (uint8_t)NAV_GEOMETRY : (uint8_t)NAV_OBSTACLE });
+            }
         } catch (const json::exception& ex) {
             throw std::runtime_error(where + ex.what());
         } catch (const std::runtime_error& ex) {

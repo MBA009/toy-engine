@@ -111,6 +111,27 @@ bool loadGltf(const std::string& path, MeshData& out, std::string& error, const 
         return false;
     }
 
+    // Extensions that change how geometry is stored: without support the file can't be read at all
+    for (cgltf_size i = 0; i < data->extensions_required_count; ++i) {
+        const std::string ext = data->extensions_required[i];
+        if (ext == "KHR_draco_mesh_compression" || ext == "EXT_meshopt_compression") {
+            error = "'" + path + "' uses " + ext + " mesh compression, which is not supported "
+                    "(re-export it uncompressed, or run: gltf-transform copy in.glb out.glb)";
+            cgltf_free(data);
+            return false;
+        }
+    }
+    {   // Extensions that only change the look: the model still loads, but not exactly as its author intended
+        std::string ignored;
+        for (cgltf_size i = 0; i < data->extensions_used_count; ++i) {
+            const std::string ext = data->extensions_used[i];
+            if (ext.rfind("KHR_materials_", 0) == 0 && ext != "KHR_materials_unlit" && ext != "KHR_materials_emissive_strength")
+                ignored += (ignored.empty() ? "" : ", ") + ext;
+        }
+        if (!ignored.empty())
+            out.warnings.push_back("material extensions ignored (drawn as plain base color): " + ignored);
+    }
+
     const std::filesystem::path baseDir = std::filesystem::path(path).parent_path();
     out.dependencies.push_back(path);
     for (cgltf_size b = 0; b < data->buffers_count; ++b) {          // an external .bin next to a .gltf
@@ -131,8 +152,16 @@ bool loadGltf(const std::string& path, MeshData& out, std::string& error, const 
         if (materialMap[mi] != -2) return materialMap[mi];
         MaterialData md;
         md.name = mat->name ? mat->name : "material " + std::to_string(mi);
+        md.doubleSided = mat->double_sided != 0;
+        if (mat->alpha_mode == cgltf_alpha_mode_mask) md.alphaCutoff = std::max(mat->alpha_cutoff, 0.01f);   // glTF default is 0.5
+        else if (mat->alpha_mode == cgltf_alpha_mode_blend) {
+            md.alphaCutoff = 0.5f;      // real blending needs back-to-front sorting; alpha-test is a decent stand-in
+            out.warnings.push_back("material '" + md.name + "' is alpha-blended; drawn alpha-tested instead");
+        }
         if (mat->has_pbr_metallic_roughness) {
             const cgltf_texture_view& tv = mat->pbr_metallic_roughness.base_color_texture;
+            if (tv.texture && !tv.texture->image && (tv.texture->basisu_image || tv.texture->webp_image))
+                out.warnings.push_back("material '" + md.name + "': texture is KTX2/WebP only, which is not supported");
             if (tv.texture && tv.texture->image) {
                 size_t ii = (size_t)cgltf_image_index(data, tv.texture->image);
                 if (imageMap[ii] == -2) {
@@ -189,6 +218,21 @@ bool loadGltf(const std::string& path, MeshData& out, std::string& error, const 
                 color = { linearToSrgbApprox(f[0]), linearToSrgbApprox(f[1]), linearToSrgbApprox(f[2]) };
             }
 
+            // KHR_texture_transform (offset / rotation / scale of the base color texture) is baked into the UVs:
+            // uv' = offset + R(rotation) * (scale * uv), exactly the spec's translation * rotation * scale
+            bool uvTransform = false;
+            float uvOff[2] = { 0, 0 }, uvScale[2] = { 1, 1 }, uvCos = 1.0f, uvSin = 0.0f;
+            if (prim.material && prim.material->has_pbr_metallic_roughness) {
+                const cgltf_texture_view& tv = prim.material->pbr_metallic_roughness.base_color_texture;
+                if (tv.texture && tv.has_transform) {
+                    uvTransform = true;
+                    uvOff[0] = tv.transform.offset[0]; uvOff[1] = tv.transform.offset[1];
+                    uvScale[0] = tv.transform.scale[0]; uvScale[1] = tv.transform.scale[1];
+                    uvCos = std::cos(tv.transform.rotation);
+                    uvSin = std::sin(tv.transform.rotation);
+                }
+            }
+
             const uint32_t base = (uint32_t)out.vertices.size();
             const cgltf_size count = posAcc->count;
             for (cgltf_size i = 0; i < count; ++i) {
@@ -201,8 +245,14 @@ bool loadGltf(const std::string& path, MeshData& out, std::string& error, const 
                 v.pos = transformPoint(world, { p3[0], p3[1], p3[2] });
                 v.normal = nrmAcc ? (normalMat * Vec4(n3[0], n3[1], n3[2], 0.0f)).xyz().normalized() : Vec3{ 0, 0, 0 };
                 v.color = color;
-                v.u = uv[0];
-                v.v = uv[1];
+                if (uvTransform) {
+                    float sx = uv[0] * uvScale[0], sy = uv[1] * uvScale[1];
+                    v.u = uvCos * sx - uvSin * sy + uvOff[0];
+                    v.v = uvSin * sx + uvCos * sy + uvOff[1];
+                } else {
+                    v.u = uv[0];
+                    v.v = uv[1];
+                }
                 out.vertices.push_back(v);
             }
 

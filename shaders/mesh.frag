@@ -33,10 +33,14 @@ layout(location = 0) out vec4 outColor;
 void main() {
     // Interpolation shortens normals, so re-normalize (same as Phase 1)
     vec3 N = normalize(fragNormal);
+    if (!gl_FrontFacing) N = -N;   // back face of a double-sided material: light the side the camera sees
     vec3 V = normalize(scene.cameraPos.xyz - fragWorldPos);
 
     // Our colors are authored as sRGB; lighting math must happen in linear space
-    vec3 albedo = pow(fragColor, vec3(2.2)) * texture(baseColorTex, fragUV).rgb;
+    vec4 texel = texture(baseColorTex, fragUV);
+    // Alpha-tested materials (leaves, fences, glTF "MASK"/"BLEND"): params.z is the cutoff, 0 = opaque
+    if (pc.params.z > 0.0 && texel.a < pc.params.z) discard;
+    vec3 albedo = pow(fragColor, vec3(2.2)) * texel.rgb;
 
     // Procedural checker for the floor, based on world position so squares stay square
     if (pc.params.x > 0.5) {

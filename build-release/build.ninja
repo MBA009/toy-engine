@@ -88,12 +88,12 @@ build ToyEngine.exe: CXX_EXECUTABLE_LINKER__ToyEngine_Release CMakeFiles\ToyEngi
 #############################################
 # Order-only phony target for ToyEngineVk
 
-build cmake_object_order_depends_target_ToyEngineVk: phony || Shaders cmake_object_order_depends_target_glfw cmake_object_order_depends_target_imgui
+build cmake_object_order_depends_target_ToyEngineVk: phony || Shaders cmake_object_order_depends_target_RecastDetour cmake_object_order_depends_target_glfw cmake_object_order_depends_target_imgui
 
 build CMakeFiles\ToyEngineVk.dir\src\vk_main.cpp.obj: CXX_COMPILER__ToyEngineVk_unscanned_Release C$:\Users\bilal\Desktop\GP\src\vk_main.cpp || cmake_object_order_depends_target_ToyEngineVk
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD /EHsc
-  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\cgltf -IC:\Users\bilal\Desktop\GP\external\stb -IC:\Users\bilal\Desktop\GP\external\json -IC:\Users\bilal\Desktop\GP\external\glfw\include -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\cgltf -IC:\Users\bilal\Desktop\GP\external\stb -IC:\Users\bilal\Desktop\GP\external\json -IC:\Users\bilal\Desktop\GP\external\glfw\include -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
   OBJECT_DIR = CMakeFiles\ToyEngineVk.dir
   OBJECT_FILE_DIR = CMakeFiles\ToyEngineVk.dir\src
   TARGET_COMPILE_PDB = CMakeFiles\ToyEngineVk.dir\
@@ -103,7 +103,17 @@ build CMakeFiles\ToyEngineVk.dir\src\vk_main.cpp.obj: CXX_COMPILER__ToyEngineVk_
 build CMakeFiles\ToyEngineVk.dir\src\gltf_loader.cpp.obj: CXX_COMPILER__ToyEngineVk_unscanned_Release C$:\Users\bilal\Desktop\GP\src\gltf_loader.cpp || cmake_object_order_depends_target_ToyEngineVk
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD /EHsc
-  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\cgltf -IC:\Users\bilal\Desktop\GP\external\stb -IC:\Users\bilal\Desktop\GP\external\json -IC:\Users\bilal\Desktop\GP\external\glfw\include -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\cgltf -IC:\Users\bilal\Desktop\GP\external\stb -IC:\Users\bilal\Desktop\GP\external\json -IC:\Users\bilal\Desktop\GP\external\glfw\include -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
+  OBJECT_DIR = CMakeFiles\ToyEngineVk.dir
+  OBJECT_FILE_DIR = CMakeFiles\ToyEngineVk.dir\src
+  TARGET_COMPILE_PDB = CMakeFiles\ToyEngineVk.dir\
+  TARGET_PDB = ToyEngineVk.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\ToyEngineVk.dir
+
+build CMakeFiles\ToyEngineVk.dir\src\navmesh.cpp.obj: CXX_COMPILER__ToyEngineVk_unscanned_Release C$:\Users\bilal\Desktop\GP\src\navmesh.cpp || cmake_object_order_depends_target_ToyEngineVk
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD /EHsc
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\cgltf -IC:\Users\bilal\Desktop\GP\external\stb -IC:\Users\bilal\Desktop\GP\external\json -IC:\Users\bilal\Desktop\GP\external\glfw\include -IC:\Users\bilal\Desktop\GP\external\imgui -IC:\Users\bilal\Desktop\GP\external\imgui\backends -IC:\Users\bilal\Desktop\GP\external\ImGuizmo\src -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include -external:IC:\VulkanSDK\1.4.357.0\include -external:W0
   OBJECT_DIR = CMakeFiles\ToyEngineVk.dir
   OBJECT_FILE_DIR = CMakeFiles\ToyEngineVk.dir\src
   TARGET_COMPILE_PDB = CMakeFiles\ToyEngineVk.dir\
@@ -118,11 +128,11 @@ build CMakeFiles\ToyEngineVk.dir\src\gltf_loader.cpp.obj: CXX_COMPILER__ToyEngin
 #############################################
 # Link the executable ToyEngineVk.exe
 
-build ToyEngineVk.exe: CXX_EXECUTABLE_LINKER__ToyEngineVk_Release CMakeFiles\ToyEngineVk.dir\src\vk_main.cpp.obj CMakeFiles\ToyEngineVk.dir\src\gltf_loader.cpp.obj | external\glfw\src\glfw3.lib C$:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib imgui.lib external\glfw\src\glfw3.lib C$:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib || Shaders external\glfw\src\glfw3.lib imgui.lib
+build ToyEngineVk.exe: CXX_EXECUTABLE_LINKER__ToyEngineVk_Release CMakeFiles\ToyEngineVk.dir\src\vk_main.cpp.obj CMakeFiles\ToyEngineVk.dir\src\gltf_loader.cpp.obj CMakeFiles\ToyEngineVk.dir\src\navmesh.cpp.obj | external\glfw\src\glfw3.lib C$:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib imgui.lib RecastDetour.lib external\glfw\src\glfw3.lib C$:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib || RecastDetour.lib Shaders external\glfw\src\glfw3.lib imgui.lib
   CONFIG = Release
   FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -MD
   LINK_FLAGS = /machine:x64 /INCREMENTAL:NO /subsystem:console
-  LINK_LIBRARIES = external\glfw\src\glfw3.lib  C:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib  imgui.lib  external\glfw\src\glfw3.lib  C:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib
+  LINK_LIBRARIES = external\glfw\src\glfw3.lib  C:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib  imgui.lib  RecastDetour.lib  external\glfw\src\glfw3.lib  C:\VulkanSDK\1.4.357.0\Lib\vulkan-1.lib  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib
   OBJECT_DIR = CMakeFiles\ToyEngineVk.dir
   POST_BUILD = cd .
   PRE_LINK = cd .
@@ -276,6 +286,215 @@ build imgui.lib: CXX_STATIC_LIBRARY_LINKER__imgui_Release CMakeFiles\imgui.dir\e
   TARGET_FILE = imgui.lib
   TARGET_PDB = imgui.pdb
   TARGET_SUPPORT_DIR = CMakeFiles\imgui.dir
+
+# =============================================================================
+# Object build statements for STATIC_LIBRARY target RecastDetour
+
+
+#############################################
+# Order-only phony target for RecastDetour
+
+build cmake_object_order_depends_target_RecastDetour: phony || .
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourAlloc.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Source\DetourAlloc.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourAssert.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Source\DetourAssert.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourCommon.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Source\DetourCommon.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourNavMesh.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Source\DetourNavMesh.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourNavMeshBuilder.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Source\DetourNavMeshBuilder.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourNavMeshQuery.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Source\DetourNavMeshQuery.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourNode.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Source\DetourNode.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\Recast.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\Recast.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastAlloc.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastAlloc.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastArea.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastArea.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastAssert.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastAssert.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastContour.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastContour.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastFilter.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastFilter.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastLayers.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastLayers.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastMesh.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastMesh.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastMeshDetail.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastMeshDetail.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastRasterization.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastRasterization.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+build CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastRegion.cpp.obj: CXX_COMPILER__RecastDetour_unscanned_Release C$:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Source\RecastRegion.cpp || cmake_object_order_depends_target_RecastDetour
+  CONFIG = Release
+  FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -std:c++17 -MD
+  INCLUDES = -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Recast\Include -IC:\Users\bilal\Desktop\GP\external\recastnavigation\Detour\Include
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  OBJECT_FILE_DIR = CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
+
+
+# =============================================================================
+# Link build statements for STATIC_LIBRARY target RecastDetour
+
+
+#############################################
+# Link the static library RecastDetour.lib
+
+build RecastDetour.lib: CXX_STATIC_LIBRARY_LINKER__RecastDetour_Release CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourAlloc.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourAssert.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourCommon.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourNavMesh.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourNavMeshBuilder.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourNavMeshQuery.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Detour\Source\DetourNode.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\Recast.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastAlloc.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastArea.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastAssert.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastContour.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastFilter.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastLayers.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastMesh.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastMeshDetail.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastRasterization.cpp.obj CMakeFiles\RecastDetour.dir\external\recastnavigation\Recast\Source\RecastRegion.cpp.obj
+  CONFIG = Release
+  LANGUAGE_COMPILE_FLAGS = /DWIN32 /D_WINDOWS /EHsc /O2 /Ob2 /DNDEBUG -MD
+  LINK_FLAGS = /machine:x64
+  OBJECT_DIR = CMakeFiles\RecastDetour.dir
+  POST_BUILD = cd .
+  PRE_LINK = cd .
+  TARGET_COMPILE_PDB = CMakeFiles\RecastDetour.dir\RecastDetour.pdb
+  TARGET_FILE = RecastDetour.lib
+  TARGET_PDB = RecastDetour.pdb
+  TARGET_SUPPORT_DIR = CMakeFiles\RecastDetour.dir
 
 
 #############################################
@@ -783,6 +1002,8 @@ build external\glfw\src\CMakeFiles\update_mappings | ${cmake_ninja_workdir}exter
 
 build EcsBench: phony EcsBench.exe
 
+build RecastDetour: phony RecastDetour.lib
+
 build ToyEngine: phony ToyEngine.exe
 
 build ToyEngineVk: phony ToyEngineVk.exe
@@ -805,7 +1026,7 @@ build update_mappings: phony external\glfw\src\update_mappings
 #############################################
 # Folder: C:/Users/bilal/Desktop/GP/build-release
 
-build all: phony ToyEngine.exe ToyEngineVk.exe EcsBench.exe imgui.lib external\glfw\all
+build all: phony ToyEngine.exe ToyEngineVk.exe EcsBench.exe imgui.lib RecastDetour.lib external\glfw\all
 
 # =============================================================================
 

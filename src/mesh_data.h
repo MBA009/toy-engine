@@ -28,6 +28,8 @@ struct ImageData {
 struct MaterialData {
     std::string name;
     int baseColorImage = -1;     // index into MeshData::images, or -1 = untextured (white)
+    bool doubleSided = false;    // draw back faces too (leaves, cloth, thin sheets)
+    float alphaCutoff = 0.0f;    // > 0: pixels whose texture alpha is below this are discarded (glTF "MASK"; "BLEND" is approximated by 0.5)
 };
 
 // A run of indices drawn with one material. A mesh with N materials is drawn as N draw calls.

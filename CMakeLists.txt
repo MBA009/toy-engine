@@ -73,3 +73,14 @@ target_include_directories(ToyEngineVk PRIVATE ${CMAKE_SOURCE_DIR}/external/stb)
 target_include_directories(ToyEngineVk PRIVATE ${CMAKE_SOURCE_DIR}/external/json)
 
 target_compile_options(EcsBench PRIVATE $<$<CONFIG:Release>:/O2>)
+
+file(GLOB RECAST_SOURCES
+     ${CMAKE_SOURCE_DIR}/external/recastnavigation/Recast/Source/*.cpp
+     ${CMAKE_SOURCE_DIR}/external/recastnavigation/Detour/Source/*.cpp)
+add_library(RecastDetour STATIC ${RECAST_SOURCES})
+target_include_directories(RecastDetour PUBLIC
+     ${CMAKE_SOURCE_DIR}/external/recastnavigation/Recast/Include
+     ${CMAKE_SOURCE_DIR}/external/recastnavigation/Detour/Include)
+
+target_sources(ToyEngineVk PRIVATE src/navmesh.cpp)
+target_link_libraries(ToyEngineVk PRIVATE RecastDetour)

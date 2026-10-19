@@ -35,6 +35,13 @@ int main() {
     a.add<Transform>(e3, Transform{ { 5, 6, 7 }, 0.0f, 2.0f });
     a.add<MeshRenderer>(e3, MeshRenderer{ 3, 0 });
     a.add<Velocity>(e3, Velocity{ { 1.0f, 0.0f, -2.0f } });
+    a.add<NavSource>(e3, NavSource{ NAV_GEOMETRY });
+    a.add<NavSource>(e0, NavSource{ NAV_OBSTACLE });
+    { AIAgent ag; ag.moveSpeed = 1.25f; ag.turnSpeed = 7.5f; ag.footOffset = 0.075f; ag.path = { {1,2,3} }; a.add<AIAgent>(e1, ag); }
+
+    { AIBrain br; br.detectRange = 2.5f; br.fleeBelow = 0.2f; br.recoverAt = 0.9f; br.patrol = { {1,0,2}, {3,0,-4.5f} };
+      a.add<AIBrain>(e1, br); a.add<Health>(e1, Health{ 40.0f, 80.0f }); a.add<Player>(e0, Player{}); a.get<AIBrain>(e1).attackDamage = 33.0f;
+      a.add<Goal>(e3, Goal{ 0.7f }); a.add<StartPad>(e0, StartPad{ 0.55f }); }
 
     json doc = newSceneDoc();
     doc["entities"] = entitiesToJson(a, keyFn);
@@ -50,6 +57,11 @@ int main() {
     entitiesFromJson(back["entities"], b, resolve, 1000, warn);
     CHECK(warn.empty());
     CHECK(b.size() == 3);
+    CHECK(b.has<Player>(0) && !b.has<Player>(1));
+    CHECK(b.get<AIBrain>(1).attackDamage == 33.0f && b.has<Goal>(2) && b.get<Goal>(2).radius == 0.7f && b.get<StartPad>(0).radius == 0.55f && !b.has<Goal>(0));
+    CHECK(b.has<AIBrain>(1) && b.get<AIBrain>(1).detectRange == 2.5f && b.get<AIBrain>(1).patrol.size() == 2);
+    CHECK(b.get<AIBrain>(1).patrol[1].z == -4.5f && b.get<AIBrain>(1).recoverAt == 0.9f);
+    CHECK(b.has<Health>(1) && b.get<Health>(1).current == 40.0f && b.get<Health>(1).max == 80.0f);
     // entities are written in id order, so the loaded ones are 0,1,2 = e0,e1,e3
     CHECK(b.get<Name>(0).value == a.get<Name>(e0).value);
     const Transform &t0a = a.get<Transform>(e0), &t0b = b.get<Transform>(0);
@@ -60,6 +72,10 @@ int main() {
     const Bob &ba = a.get<Bob>(e0), &bb = b.get<Bob>(0);
     CHECK(same(ba.amplitude, bb.amplitude) && same(ba.frequency, bb.frequency) && same(ba.baseY, bb.baseY) && same(ba.phase, bb.phase));
     CHECK(!b.has<Name>(1) && !b.has<MeshRenderer>(1) && !b.has<Spin>(1) && !b.has<Bob>(1) && !b.has<Velocity>(1));
+    CHECK(same(b.get<AIAgent>(1).moveSpeed, 1.25f) && same(b.get<AIAgent>(1).turnSpeed, 7.5f) && same(b.get<AIAgent>(1).footOffset, 0.075f));
+    CHECK(b.get<AIAgent>(1).path.empty() && !b.get<AIAgent>(1).walking());       // paths are not saved
+    CHECK(!b.has<AIAgent>(0) && !b.has<AIAgent>(2));
+    CHECK(b.get<NavSource>(0).mode == NAV_OBSTACLE && b.get<NavSource>(2).mode == NAV_GEOMETRY && !b.has<NavSource>(1));
     CHECK(b.get<MeshRenderer>(2).meshId == 3 && same(b.get<Velocity>(2).value.z, -2.0f) && same(b.get<Transform>(2).scale, 2.0f));
 
     std::printf("unknown mesh falls back to the cube with a warning\n");
@@ -92,6 +108,8 @@ int main() {
     CHECK(expectThrow(json::array({ json{ { "transform", { { "position", json::array({ 1, "x", 3 }) } } } } })));   // non-number
     CHECK(expectThrow(json::array({ json{ { "transform", { { "yaw", nullptr } } } } })));                           // NaN saved as null
     CHECK(expectThrow(json::array({ json{ { "name", 7 } } })));
+    CHECK(expectThrow(json::array({ json{ { "nav", "walkable" } } })));
+    CHECK(expectThrow(json::array({ json{ { "agent", { { "speed", "fast" } } } } })));
     CHECK(expectThrow(json::array({ json{ { "spin", { { "speed", "fast" } } } } })));
 
     auto writeText = [](const char* p, const char* text) { std::ofstream f(p); f << text; };

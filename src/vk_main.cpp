@@ -29,6 +29,9 @@
 #include "gltf_loader.h"
 #include "scene_io.h"
 #include "file_watch.h"
+#include "navmesh.h"
+#include "ai_systems.h"
+#include "demo_level.h"
 
 #include "imgui.h"
 #include "ImGuizmo.h"
@@ -96,7 +99,7 @@ static_assert(sizeof(SceneUBO) == 192, "SceneUBO must match the GLSL std140 layo
 
 struct PushData {
     Mat4 model;
-    float params[4];   // x = checker on/off, y = shininess
+    float params[4];   // x = checker on/off, y = shininess, z = alpha cutoff (0 = opaque)
 };
 
 class App {
@@ -128,6 +131,7 @@ private:
     VkRenderPass renderPass = VK_NULL_HANDLE;
     VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
     VkPipeline graphicsPipeline = VK_NULL_HANDLE;
+    VkPipeline noCullPipeline = VK_NULL_HANDLE;       // same, but back faces are drawn too (glTF "double sided" materials)
     VkPipeline wireframePipeline = VK_NULL_HANDLE;   // same shaders, polygon mode LINE (if the GPU supports it)
     std::vector<VkFramebuffer> swapchainFramebuffers;
 
@@ -186,6 +190,8 @@ private:
     static constexpr uint32_t MAX_MATERIALS = 512;
     std::vector<GpuTexture> textures;
     VkSampler textureSampler = VK_NULL_HANDLE;
+    struct MaterialProps { bool doubleSided = false; float alphaCutoff = 0.0f; };
+    std::vector<MaterialProps> materialProps;    // indexed like materialSets
     std::vector<uint32_t> materialTexture;       // materialSets[i] shows textures[materialTexture[i]] (to rewrite on sampler change)
     int filterMode = 2;                          // 0 = nearest, 1 = bilinear (base level only), 2 = trilinear (mipmaps)
     int anisotropy = 8;                          // requested max anisotropy (clamped to the GPU's limit)
@@ -260,6 +266,33 @@ private:
     bool prevSaveDown = false;
     char scenePath[260] = "scenes/scene.json";     // file the Scene panel saves to / loads from
     std::string sceneStatus;                       // result of the last save / load, shown in the Scene panel
+    // Navigation mesh (Step 7.1)
+    NavMesh navMesh;
+    NavParams navParams;
+    bool showNavmesh = true;
+    std::string navStatus = "not built yet";
+    // Path query (Step 7.2): two points on the navmesh and the route between them
+    enum class PathTool { Off, SetStart, SetEnd, SendAgent, AddPatrol, Place, MovePlayer };
+    PathTool pathTool = PathTool::Off;      // which point the next click on the navmesh places
+    float pathStart[3] = { 0, 0, 0 }, pathEnd[3] = { 0, 0, 0 };
+    bool haveStart = false, haveEnd = false;
+    NavPath navPath;
+    std::string pathStatus;
+    bool showAgentPaths = true;
+    BehaviorTree combatTree = makeCombatTree();   // shared by every agent that has an AIBrain
+    bool runAI = true;
+    GameState game;               // win/lose state of the current run (only meaningful when the scene has a player and a goal)
+    bool showAILabels = true;   // state text + health bar above each agent with a brain
+    PathFn navPathFn = [this](const Vec3& from, const Vec3& to, std::vector<Vec3>& corners) {
+        if (!navMesh.valid()) return false;
+        const float f[3] = { from.x, from.y, from.z }, t[3] = { to.x, to.y, to.z };
+        NavPath p; std::string err;
+        if (!navMesh.findPath(f, t, p, err) || p.count() == 0) return false;
+        corners.clear();
+        for (size_t i = 0; i < p.count(); i++) corners.push_back({ p.point(i)[0], p.point(i)[1], p.point(i)[2] });
+        return true;
+    };
+    int agentSerial = 0;
     // Hot reload (Step 6.4): poll file timestamps; editor mode only
     bool hotReload = true;
     FileWatcher shaderWatch, assetWatch;
@@ -369,6 +402,7 @@ private:
 
         for (auto fb : swapchainFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
         vkDestroyPipeline(device, graphicsPipeline, nullptr);
+        vkDestroyPipeline(device, noCullPipeline, nullptr);
         if (wireframePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, wireframePipeline, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyRenderPass(device, renderPass, nullptr);
@@ -937,8 +971,16 @@ private:
         info.renderPass = renderPass;
         info.subpass = 0;
 
-        VkPipeline newFill = VK_NULL_HANDLE, newWire = VK_NULL_HANDLE;
+        VkPipeline newFill = VK_NULL_HANDLE, newWire = VK_NULL_HANDLE, newNoCull = VK_NULL_HANDLE;
         VkResult result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &newFill);
+
+        // Same again without back-face culling, for double-sided materials
+        if (result == VK_SUCCESS) {
+            const VkCullModeFlags cull = raster.cullMode;
+            raster.cullMode = VK_CULL_MODE_NONE;
+            result = vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &info, nullptr, &newNoCull);
+            raster.cullMode = cull;
+        }
 
         // Second pipeline: identical except it rasterizes triangle edges (debug toggle).
         // `info` still points at `raster`, so changing the mode there is all it takes.
@@ -954,6 +996,7 @@ private:
         if (result != VK_SUCCESS) {
             if (newFill != VK_NULL_HANDLE) vkDestroyPipeline(device, newFill, nullptr);
             if (newWire != VK_NULL_HANDLE) vkDestroyPipeline(device, newWire, nullptr);
+            if (newNoCull != VK_NULL_HANDLE) vkDestroyPipeline(device, newNoCull, nullptr);
             error = "vkCreateGraphicsPipelines failed (" + std::to_string((int)result) + "); do the new shaders still match the vertex layout and descriptor sets?";
             return false;
         }
@@ -963,7 +1006,9 @@ private:
             vkDeviceWaitIdle(device);
             vkDestroyPipeline(device, graphicsPipeline, nullptr);
             if (wireframePipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, wireframePipeline, nullptr);
+            vkDestroyPipeline(device, noCullPipeline, nullptr);
         }
+        noCullPipeline = newNoCull;
         graphicsPipeline = newFill;
         wireframePipeline = newWire;
         return true;
@@ -1071,8 +1116,21 @@ private:
         // instances first..first+count-1. Otherwise: one draw call per object (firstInstance picks its matrix).
         // A mesh with several materials is several draw calls (one per submesh), each with its material bound.
         uint32_t boundMaterial = ~0u;
+        const bool wireActive = wireframe && wireframePipeline != VK_NULL_HANDLE;
+        VkPipeline boundPipeline = wireActive ? wireframePipeline : graphicsPipeline;
+        float boundCutoff = 0.0f;
         auto bindMaterial = [&](uint32_t mat) {
             if (mat == boundMaterial) return;
+            const MaterialProps& mp = materialProps[mat];
+            if (!wireActive) {      // double-sided materials switch to the no-culling pipeline
+                VkPipeline want = mp.doubleSided ? noCullPipeline : graphicsPipeline;
+                if (want != boundPipeline) { vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, want); boundPipeline = want; }
+            }
+            if (mp.alphaCutoff != boundCutoff) {   // params.z: the fragment shader discards pixels below this alpha
+                vkCmdPushConstants(cmd, pipelineLayout, pushStages, (uint32_t)(offsetof(PushData, params) + 2 * sizeof(float)),
+                                   sizeof(float), &mp.alphaCutoff);
+                boundCutoff = mp.alphaCutoff;
+            }
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 1, 1,
                                     &materialSets[mat], 0, nullptr);
             boundMaterial = mat;
@@ -1261,12 +1319,12 @@ private:
         MeshInfo floorInfo;
         floorInfo.name = "Floor";
         floorInfo.firstIndex = (uint32_t)meshIndices.size();
-        addQuad({-1,-0.5f,-0.5f}, { 1,-0.5f,-0.5f}, { 1,-0.5f,-5.0f}, {-1,-0.5f,-5.0f},
+        addQuad({-3,-0.5f, 1.0f}, { 3,-0.5f, 1.0f}, { 3,-0.5f,-7.0f}, {-3,-0.5f,-7.0f},
                 { 0, 1, 0}, {0.6f, 0.6f, 0.6f});
         floorInfo.indexCount = 6;
         floorInfo.subs.push_back({ floorInfo.firstIndex, 6, 0 });
-        floorInfo.bounds.min = { -1.0f, -0.5f, -5.0f };
-        floorInfo.bounds.max = {  1.0f, -0.5f, -0.5f };
+        floorInfo.bounds.min = { -3.0f, -0.5f, -7.0f };
+        floorInfo.bounds.max = {  3.0f, -0.5f,  1.0f };
         meshes.push_back(floorInfo);
 
         uploadMeshBuffers();
@@ -1304,8 +1362,13 @@ private:
             imageTex[i] = createTexture(md.images[i].rgba.data(), (uint32_t)md.images[i].width, (uint32_t)md.images[i].height);
         std::vector<uint32_t> materialId(md.materials.size(), 0);
         for (size_t i = 0; i < md.materials.size(); i++) {
-            int img = md.materials[i].baseColorImage;
-            if (img >= 0) { materialId[i] = createMaterial(imageTex[img]); info.textureCount++; }
+            const MaterialData& mat = md.materials[i];
+            // A material only needs its own entry if it differs from the default white one
+            if (mat.baseColorImage >= 0 || mat.doubleSided || mat.alphaCutoff > 0.0f) {
+                uint32_t tex = mat.baseColorImage >= 0 ? imageTex[mat.baseColorImage] : 0;   // texture 0 = the white pixel
+                materialId[i] = createMaterial(tex, MaterialProps{ mat.doubleSided, mat.alphaCutoff });
+                if (mat.baseColorImage >= 0) info.textureCount++;
+            }
         }
         for (const Submesh& sm : md.submeshes)
             info.subs.push_back({ info.firstIndex + sm.firstIndex, sm.indexCount,
@@ -1380,6 +1443,11 @@ private:
         bool hasSpin = world.has<Spin>(selected);
         Spin spin = hasSpin ? world.get<Spin>(selected) : Spin{};
         MeshRenderer mr = world.has<MeshRenderer>(selected) ? world.get<MeshRenderer>(selected) : MeshRenderer{};
+        const bool hasAgent = world.has<AIAgent>(selected);
+        AIAgent agent = hasAgent ? world.get<AIAgent>(selected) : AIAgent{};
+        agent.stop();
+        const bool hasNav = world.has<NavSource>(selected);
+        const NavSource nav = hasNav ? world.get<NavSource>(selected) : NavSource{};
         std::string name = world.has<Name>(selected) ? world.get<Name>(selected).value : std::string("Cube");
 
         Entity e = world.create();
@@ -1388,6 +1456,8 @@ private:
         if (hasSpin) world.add<Spin>(e, spin);
         world.add<MeshRenderer>(e, mr);
         world.add<Name>(e, Name{ name + " (copy)" });
+        if (hasNav) world.add<NavSource>(e, nav);
+        if (hasAgent) world.add<AIAgent>(e, agent);
         selected = e;
         cubeCount = (int)world.size();
     }
@@ -1617,6 +1687,8 @@ private:
         } else {
             const Entity e = selected;
             bool removeSpin = false, removeBob = false, addSpin = false, addBob = false, addName = false;
+            bool addAgent = false, removeAgent = false, addBrain = false, removeBrain = false, addHealth = false, removeHealth = false, makePlayer = false, unmakePlayer = false;
+            int navChange = -1;      // new navmesh role chosen in the combo (0 = ignore), applied with the other structural changes
 
             ImGui::TextDisabled("Entity %u", e);
 
@@ -1683,6 +1755,90 @@ private:
                 }
             }
 
+            // --- AI agent ---
+            if (world.has<AIAgent>(e)) {
+                if (ImGui::CollapsingHeader("AI Agent", ImGuiTreeNodeFlags_DefaultOpen)) {
+                    AIAgent& ag = world.get<AIAgent>(e);
+                    ImGui::DragFloat("Move speed", &ag.moveSpeed, 0.01f, 0.0f, 10.0f, "%.2f");
+                    ImGui::DragFloat("Turn speed", &ag.turnSpeed, 0.1f, 0.0f, 50.0f, "%.1f");
+                    ImGui::DragFloat("Foot offset", &ag.footOffset, 0.005f, 0.0f, 5.0f, "%.3f");
+                    if (ag.walking()) ImGui::Text("Walking: corner %u of %zu", ag.waypoint + 1, ag.path.size());
+                    else ImGui::TextDisabled("Idle");
+                    if (ImGui::SmallButton("Stop")) ag.stop();
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Send to...") && navMesh.valid()) pathTool = PathTool::SendAgent;
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Remove agent")) removeAgent = true;
+                    if (pathTool == PathTool::SendAgent) ImGui::TextDisabled("Left-click on the navmesh (Esc cancels)");
+                }
+            }
+
+            // --- Health ---
+            if (world.has<Health>(e) && ImGui::CollapsingHeader("Health", ImGuiTreeNodeFlags_DefaultOpen)) {
+                Health& h = world.get<Health>(e);
+                ImGui::DragFloat("Max##hp", &h.max, 1.0f, 1.0f, 10000.0f, "%.0f");
+                ImGui::SliderFloat("Current##hp", &h.current, 0.0f, h.max, "%.0f");
+                if (ImGui::SmallButton("Remove health")) removeHealth = true;
+            }
+
+            // --- Level markers ---
+            if (world.has<Goal>(e) && ImGui::CollapsingHeader("Goal", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::DragFloat("Radius##goal", &world.get<Goal>(e).radius, 0.01f, 0.05f, 5.0f, "%.2f");
+                ImGui::TextDisabled("The run is won when the player's feet are inside this ring.");
+            }
+            if (world.has<StartPad>(e) && ImGui::CollapsingHeader("Start pad", ImGuiTreeNodeFlags_DefaultOpen)) {
+                ImGui::DragFloat("Radius##start", &world.get<StartPad>(e).radius, 0.01f, 0.05f, 5.0f, "%.2f");
+                ImGui::TextDisabled("Where the player goes on Restart run.");
+            }
+
+            // --- Player tag ---
+            if (world.has<Player>(e)) {
+                ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.5f, 1), "This is the player: agents with a brain react to it.");
+                if (ImGui::SmallButton("Not the player")) unmakePlayer = true;
+            }
+
+            // --- AI Brain ---
+            if (world.has<AIBrain>(e) && ImGui::CollapsingHeader("AI Brain", ImGuiTreeNodeFlags_DefaultOpen)) {
+                AIBrain& b = world.get<AIBrain>(e);
+                if (b.lastLeaf >= 0 && b.lastLeaf < combatTree.nodeCount())
+                    ImGui::Text("Doing: %s%s", combatTree.node(b.lastLeaf).name.c_str(), b.fleeing ? "  (hurt)" : "");
+                else ImGui::TextDisabled("Not running (needs the AI to be on, and an AI Agent)");
+                ImGui::DragFloat("Detect range", &b.detectRange, 0.01f, 0.0f, 20.0f, "%.2f");
+                ImGui::DragFloat("Contact range", &b.contactRange, 0.005f, 0.0f, 5.0f, "%.3f");
+                ImGui::SliderFloat("Flee below", &b.fleeBelow, 0.0f, 1.0f, "%.2f");
+                ImGui::SliderFloat("Recover at", &b.recoverAt, 0.0f, 1.0f, "%.2f");
+                ImGui::DragFloat("Attack (player) /s", &b.attackDamage, 0.5f, 0.0f, 1000.0f, "%.1f");
+                ImGui::DragFloat("Contact damage /s", &b.contactDamage, 0.5f, 0.0f, 1000.0f, "%.1f");
+                ImGui::DragFloat("Regen /s", &b.regenPerSecond, 0.5f, 0.0f, 1000.0f, "%.1f");
+                ImGui::DragFloat("Patrol wait", &b.patrolWait, 0.05f, 0.0f, 30.0f, "%.2f s");
+                if (b.recoverAt < b.fleeBelow) b.recoverAt = b.fleeBelow;
+                ImGui::Text("Patrol points: %zu", b.patrol.size());
+                int removePoint = -1;
+                for (size_t i = 0; i < b.patrol.size(); i++) {
+                    ImGui::PushID((int)i);
+                    float v[3] = { b.patrol[i].x, b.patrol[i].y, b.patrol[i].z };
+                    ImGui::SetNextItemWidth(190.0f);
+                    if (ImGui::DragFloat3("##pt", v, 0.01f, -50.0f, 50.0f, "%.2f")) b.patrol[i] = { v[0], v[1], v[2] };
+                    ImGui::SameLine();
+                    ImGui::Text("%zu", i + 1);
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("x")) removePoint = (int)i;
+                    ImGui::PopID();
+                }
+                if (removePoint >= 0) { b.patrol.erase(b.patrol.begin() + removePoint); b.patrolStarted = false; b.patrolIndex = 0; }
+                if (ImGui::SmallButton("Add point...") && navMesh.valid()) pathTool = PathTool::AddPatrol;
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Add here") && world.has<Transform>(e)) {
+                    const Vec3& p = world.get<Transform>(e).position;
+                    const float foot = world.has<AIAgent>(e) ? world.get<AIAgent>(e).footOffset : 0.0f;
+                    b.patrol.push_back({ p.x, p.y - foot, p.z });
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Clear points")) { b.patrol.clear(); b.patrolStarted = false; b.patrolIndex = 0; }
+                if (pathTool == PathTool::AddPatrol) ImGui::TextDisabled("Left-click on the navmesh (Esc cancels)");
+                if (ImGui::SmallButton("Remove brain")) removeBrain = true;
+            }
+
             // --- Add component ---
             ImGui::Separator();
             ImGui::BeginDisabled(world.has<Spin>(e));
@@ -1693,7 +1849,69 @@ private:
             if (ImGui::Button("+ Bob")) addBob = true;
             ImGui::EndDisabled();
 
+            if (world.has<MeshRenderer>(e) && !world.has<AIAgent>(e)) {
+                ImGui::SameLine();
+                if (ImGui::Button("+ AI Agent")) addAgent = true;
+            }
+
+            if (world.has<AIAgent>(e) && !world.has<AIBrain>(e)) {
+                ImGui::SameLine();
+                if (ImGui::Button("+ AI Brain")) addBrain = true;
+            }
+            if (!world.has<Health>(e)) {
+                ImGui::SameLine();
+                if (ImGui::Button("+ Health")) addHealth = true;
+            }
+            if (!world.has<Goal>(e) && world.has<Transform>(e)) {
+                ImGui::SameLine();
+                if (ImGui::Button("Make goal")) world.add<Goal>(e, Goal{});
+            }
+            if (!world.has<StartPad>(e) && world.has<Transform>(e)) {
+                ImGui::SameLine();
+                if (ImGui::Button("Make start")) world.add<StartPad>(e, StartPad{});
+            }
+            if (!world.has<Player>(e) && world.has<Transform>(e)) {
+                ImGui::SameLine();
+                if (ImGui::Button("Make player")) makePlayer = true;
+            }
+
+            // --- Navigation role (only meaningful for entities with a mesh) ---
+            if (world.has<MeshRenderer>(e)) {
+                const char* roles[] = { "Ignore", "Obstacle (solid)", "Level geometry" };
+                int role = !world.has<NavSource>(e) ? 0 : (world.get<NavSource>(e).mode == NAV_GEOMETRY ? 2 : 1);
+                if (ImGui::Combo("Navmesh", &role, roles, 3)) navChange = role;
+            }
+
             // Structural changes last
+            if (addAgent) {
+                AIAgent ag;
+                const MeshRenderer& mr = world.get<MeshRenderer>(e);
+                const float minY = mr.meshId < meshes.size() ? meshes[mr.meshId].bounds.min.y : -0.5f;
+                ag.footOffset = -minY * world.get<Transform>(e).scale;     // origin-to-feet distance for this mesh and size
+                world.add<AIAgent>(e, ag);
+            }
+            if (removeAgent) { world.remove<AIBrain>(e); world.remove<AIAgent>(e); }
+            if (addBrain) {
+                AIBrain br;
+                if (world.has<Transform>(e)) {          // start with a patrol point where it stands
+                    const Vec3& p = world.get<Transform>(e).position;
+                    br.patrol.push_back({ p.x, p.y - world.get<AIAgent>(e).footOffset, p.z });
+                }
+                world.add<AIBrain>(e, br);
+                if (!world.has<Health>(e)) world.add<Health>(e, Health{});
+            }
+            if (removeBrain) world.remove<AIBrain>(e);
+            if (addHealth) world.add<Health>(e, Health{});
+            if (removeHealth) world.remove<Health>(e);
+            if (makePlayer) {                            // only one player at a time
+                std::vector<Entity> old;
+                world.each<Player>([&](Entity o, Player&) { old.push_back(o); });
+                for (Entity o : old) world.remove<Player>(o);
+                world.add<Player>(e, Player{});
+            }
+            if (unmakePlayer) world.remove<Player>(e);
+            if (navChange == 0) world.remove<NavSource>(e);
+            else if (navChange > 0) world.add<NavSource>(e, NavSource{ navChange == 2 ? (uint8_t)NAV_GEOMETRY : (uint8_t)NAV_OBSTACLE });
             if (addName)    world.add<Name>(e, Name{ "Cube " + std::to_string(e) });
             if (addSpin)    world.add<Spin>(e, Spin{ 1.0f });
             if (addBob)     world.add<Bob>(e, Bob{ 0.15f, 2.0f, world.get<Transform>(e).position.y, 0.0f });
@@ -1745,6 +1963,7 @@ private:
             if (down && !prevHotkey[i] && !looking && !(imguiEnabled && ImGui::GetIO().WantTextInput)) gizmoOp = ops[i];
             prevHotkey[i] = down;
         }
+        if (pathTool != PathTool::Off) { handlePathClick(clicked); return; }     // the click places a path point instead of selecting
         if (!clicked || looking || !havePickMatrix) return;
         if (imguiEnabled && ImGui::GetIO().WantCaptureMouse) return;
         if (gizmoOver || gizmoActive) return;           // the click grabbed a gizmo handle, not the scene
@@ -1816,6 +2035,9 @@ private:
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         ImGuizmo::BeginFrame();
+        drawNavmeshOverlay();
+        drawAIOverlay();
+        drawGameUI();
 
         ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowBgAlpha(0.88f);
@@ -1880,6 +2102,9 @@ private:
             ImGui::TextWrapped("%s", shaderStatus.c_str());
         }
 
+        if (ImGui::CollapsingHeader("Navmesh", ImGuiTreeNodeFlags_DefaultOpen)) buildNavmeshPanel();
+        if (ImGui::CollapsingHeader("AI Debug", ImGuiTreeNodeFlags_DefaultOpen)) buildAIDebugPanel();
+
         if (ImGui::CollapsingHeader("Gizmo", ImGuiTreeNodeFlags_DefaultOpen)) {
             if (ImGui::RadioButton("Move (W)", gizmoOp == ImGuizmo::TRANSLATE)) gizmoOp = ImGuizmo::TRANSLATE;
             ImGui::SameLine();
@@ -1938,6 +2163,7 @@ private:
     void spawnScene() {
         world = Registry();
         selected = NULL_ENTITY;
+        game = GameState{};
         if (demoScene) { spawnDemoScene(); return; }
         if (cubeCount > MAX_CUBES) cubeCount = MAX_CUBES;
         int n = cubeCount;
@@ -1958,6 +2184,592 @@ private:
             world.add<MeshRenderer>(e, MeshRenderer{ 0, 0 });   // mesh 0 = the cube
         }
         lastSimTime = glfwGetTime();
+    }
+
+    // ---------- Navigation mesh (Step 7.1) ----------
+
+    // Appends a mesh's triangles, placed by `model`, to the navmesh input. If `points` is given, the mesh's
+    // world-space vertices are collected there too (to build the solid footprint).
+    void addMeshToNavInput(NavInput& in, const MeshInfo& mesh, const Mat4& model, std::vector<float>* points) {
+        auto world3 = [&](uint32_t index, float* out) {
+            const Vec3& p = meshVertices[(size_t)((int64_t)index + mesh.vertexOffset)].pos;
+            Vec3 w = (model * Vec4(p.x, p.y, p.z, 1.0f)).xyz();
+            out[0] = w.x; out[1] = w.y; out[2] = w.z;
+        };
+        const uint32_t end = mesh.firstIndex + mesh.indexCount;
+        for (uint32_t i = mesh.firstIndex; i + 2 < end; i += 3) {
+            float a[3], b[3], c[3];
+            world3(meshIndices[i], a);
+            world3(meshIndices[i + 1], b);
+            world3(meshIndices[i + 2], c);
+            in.addTriangle(a, b, c);
+            if (points) for (const float* p : { a, b, c }) points->insert(points->end(), p, p + 3);
+        }
+    }
+
+    // The floor (always) plus every entity with a NavSource, at its current position
+    void gatherNavInput(NavInput& in) {
+        addMeshToNavInput(in, meshes[1], Mat4::identity(), nullptr);
+        world.each<NavSource, MeshRenderer, Transform>([&](Entity, NavSource& nav, MeshRenderer& mr, Transform& t) {
+            if (mr.meshId >= meshes.size()) return;
+            std::vector<float> points;
+            addMeshToNavInput(in, meshes[mr.meshId], modelMatrix(t), nav.mode == NAV_OBSTACLE ? &points : nullptr);
+            if (nav.mode == NAV_OBSTACLE) in.addSolid(points.data(), (int)(points.size() / 3));
+        });
+    }
+
+    void bakeNavmesh() {
+        NavInput in;
+        gatherNavInput(in);
+        std::string error;
+        if (navMesh.build(in, navParams, error)) {
+            const NavStats& s = navMesh.stats();
+            computePath();      // the old route may no longer be valid on the new navmesh
+            navStatus = "Built from " + std::to_string(in.triangleCount()) + " triangles: " + std::to_string(s.polygons) +
+                        " polygons, " + std::to_string(s.triangles) + " triangles, " +
+                        std::to_string((int)(s.buildMs + 0.5)) + " ms";
+        } else {
+            navStatus = "Build failed" + std::string(navMesh.valid() ? " (keeping the previous navmesh)" : "") + ": " + error;
+        }
+    }
+
+    void buildNavmeshPanel() {
+        ImGui::Checkbox("Show overlay", &showNavmesh);
+        ImGui::SameLine();
+        if (ImGui::Button("Build")) bakeNavmesh();
+        ImGui::SameLine();
+        if (ImGui::Button("Clear")) { navMesh.clear(); navStatus = "cleared"; navPath = NavPath{}; pathTool = PathTool::Off; pathStatus.clear(); }
+
+        if (ImGui::Button("Mark all entities as obstacles")) {
+            std::vector<Entity> all = world.pool<MeshRenderer>().entities();      // copy: adding NavSource must not disturb the loop
+            for (Entity e : all) if (!world.has<NavSource>(e)) world.add<NavSource>(e, NavSource{ NAV_OBSTACLE });
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Unmark all")) {
+            std::vector<Entity> all = world.pool<NavSource>().entities();
+            for (Entity e : all) world.remove<NavSource>(e);
+        }
+        ImGui::TextDisabled("The floor is always included. Pick an entity to set its role in the Inspector.");
+
+        if (ImGui::TreeNode("Agent and build settings")) {
+            ImGui::DragFloat("Agent radius", &navParams.agentRadius, 0.005f, 0.01f, 1.0f, "%.3f");
+            ImGui::DragFloat("Agent height", &navParams.agentHeight, 0.01f, 0.05f, 3.0f, "%.2f");
+            ImGui::DragFloat("Max climb", &navParams.agentMaxClimb, 0.005f, 0.0f, 1.0f, "%.3f");
+            ImGui::DragFloat("Max slope (deg)", &navParams.agentMaxSlope, 0.5f, 0.0f, 89.0f, "%.1f");
+            ImGui::DragFloat("Cell size", &navParams.cellSize, 0.002f, 0.01f, 0.5f, "%.3f");
+            ImGui::DragFloat("Cell height", &navParams.cellHeight, 0.001f, 0.005f, 0.5f, "%.3f");
+            if (ImGui::Button("Reset to defaults")) navParams = NavParams{};
+            ImGui::TreePop();
+        }
+        ImGui::TextWrapped("%s", navStatus.c_str());
+
+        ImGui::Separator();
+        ImGui::Text("Path query");
+        if (!navMesh.valid()) ImGui::BeginDisabled();
+        if (ImGui::Button(pathTool == PathTool::SetStart ? "Click the navmesh..." : "Set start")) pathTool = PathTool::SetStart;
+        ImGui::SameLine();
+        if (ImGui::Button(pathTool == PathTool::SetEnd ? "Click the navmesh..." : "Set end")) pathTool = PathTool::SetEnd;
+        ImGui::SameLine();
+        if (ImGui::Button("Clear path")) {
+            haveStart = haveEnd = false;
+            navPath = NavPath{};
+            pathTool = PathTool::Off;
+            pathStatus.clear();
+        }
+        if (ImGui::Button("Spawn agent at start")) spawnAgentAtStart();
+        if (!navMesh.valid()) ImGui::EndDisabled();
+        ImGui::Checkbox("Show agent paths", &showAgentPaths);
+        ImGui::Checkbox("Run AI", &runAI);
+        ImGui::Separator();
+        ImGui::TextUnformatted("Place by clicking the navmesh:");
+        {
+            const char* kinds[] = { "Plain agent", "Guard (patrols, chases, flees)", "Player" };
+            int k = (int)placeKind;
+            if (ImGui::Combo("What##place", &k, kinds, 3)) placeKind = (ActorKind)k;
+            if (placeMesh >= meshes.size() || placeMesh == 1) placeMesh = 0;
+            if (ImGui::BeginCombo("Model##place", meshes[placeMesh].name.c_str())) {
+                for (uint32_t i = 0; i < meshes.size(); i++) {
+                    if (i == 1 || meshes[i].retired) continue;
+                    if (ImGui::Selectable((meshes[i].name + "##pm" + std::to_string(i)).c_str(), i == placeMesh)) placeMesh = i;
+                }
+                ImGui::EndCombo();
+            }
+            if (ImGui::Button(pathTool == PathTool::Place ? "Click the navmesh... (Esc to stop)" : "Place...")) pathTool = PathTool::Place;
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Build demo level")) buildAIDemo();
+        ImGui::SameLine();
+        ImGui::TextDisabled("(replaces the scene)");
+        if (game.active) {
+            if (ImGui::Button("Restart run")) restartRun();
+            ImGui::SameLine();
+            if (ImGui::Button(pathTool == PathTool::MovePlayer ? "Click the floor..." : "Click to move player")) pathTool = PathTool::MovePlayer;
+        }
+        ImGui::Separator();
+        if (ImGui::Button("Spawn player at start")) spawnPlayerAtStart();
+        ImGui::SameLine();
+        if (ImGui::Button("Spawn guard at start")) spawnGuardAtStart();
+        if (pathTool != PathTool::Off) ImGui::TextDisabled("Left-click on the navmesh to place it (Esc cancels)");
+        if (!pathStatus.empty()) ImGui::TextWrapped("%s", pathStatus.c_str());
+    }
+
+    void computePath() {
+        navPath = NavPath{};
+        if (!haveStart || !haveEnd || !navMesh.valid()) return;
+        std::string error;
+        if (navMesh.findPath(pathStart, pathEnd, navPath, error)) {
+            char buf[160];
+            std::snprintf(buf, sizeof buf, "Path: %zu waypoints, length %.2f%s", navPath.count(), navPath.length,
+                          navPath.partial ? " (the end is unreachable: stops at the closest point)" : "");
+            pathStatus = buf;
+        } else {
+            pathStatus = "No path: " + error;
+        }
+    }
+
+    // ---------- The full-loop demo level (Step 8.3) ----------
+
+    // Replaces the scene with the demo level (see demo_level.h): a zig-zag course with guards, a start pad and a goal.
+    // It is ordinary entities with ordinary components, so it can be edited, saved and loaded like anything else.
+    void buildAIDemo() {
+        world = Registry();
+        selected = NULL_ENTITY;
+        game = GameState{};
+        haveStart = haveEnd = false;
+        navPath = NavPath{};
+        cubeSerial = 0;
+        const DemoLevelInfo info = buildDemoLevel(world);
+        agentSerial = info.guards;
+        selected = info.player;
+        cubeCount = (int)world.size();
+        bakeNavmesh();
+        cam.position = { 0.0f, 7.0f, 1.0f };
+        cam.yaw = 0.0f;
+        cam.pitch = -1.12f;
+        if (navMesh.valid()) {
+            pathTool = PathTool::MovePlayer;
+            pathStatus = "Demo level ready: arrow keys (or clicking the floor) walk the player to the glowing GOAL. Avoid the guards.";
+        } else {
+            pathTool = PathTool::Off;
+            pathStatus = "Demo level: the navmesh failed to build: " + navStatus;
+        }
+    }
+
+    // Arrow keys walk the player directly: Up/Down along the camera's heading, Left/Right sideways. Movement goes
+    // through the navmesh (moveAlong), so walls and edges stop it and it slides along them. Pressing a key cancels
+    // any click-to-move path. The camera keeps WASD and the mouse, so the arrows are free.
+    void playerKeyboardMove(float dt) {
+        if (dt <= 0.0f || !navMesh.valid() || !imguiEnabled || ImGui::GetIO().WantTextInput) return;
+        auto down = [&](int key) { return glfwGetKey(window, key) == GLFW_PRESS ? 1.0f : 0.0f; };
+        const float fwd = down(GLFW_KEY_UP) - down(GLFW_KEY_DOWN);
+        const float side = down(GLFW_KEY_RIGHT) - down(GLFW_KEY_LEFT);
+        if (fwd == 0.0f && side == 0.0f) return;
+        const Entity player = findPlayer(world);
+        if (player == NULL_ENTITY || !world.has<AIAgent>(player)) return;
+        AIAgent& ag = world.get<AIAgent>(player);
+        Transform& t = world.get<Transform>(player);
+        float dx = std::sin(cam.yaw) * fwd + std::cos(cam.yaw) * side;      // camera heading on the ground
+        float dz = -std::cos(cam.yaw) * fwd + std::sin(cam.yaw) * side;
+        const float len = std::sqrt(dx * dx + dz * dz);
+        dx /= len; dz /= len;
+        ag.stop();
+        const float feet[3] = { t.position.x, t.position.y - ag.footOffset, t.position.z };
+        const float want[3] = { feet[0] + dx * ag.moveSpeed * dt, feet[1], feet[2] + dz * ag.moveSpeed * dt };
+        float out[3];
+        if (!navMesh.moveAlong(feet, want, out)) return;
+        t.position = { out[0], out[1] + ag.footOffset, out[2] };
+        t.yaw = turnToward(t.yaw, std::atan2(dx, dz), std::max(ag.turnSpeed, 1.0f) * dt);
+    }
+
+    void restartRun() {
+        resetRun(world, game);
+        if (navMesh.valid() && findPlayer(world) != NULL_ENTITY) pathTool = PathTool::MovePlayer;
+    }
+
+    // Projects a world point to screen pixels; false if it is behind the camera
+    bool worldToScreen(const Vec3& p, ImVec2& out) const {
+        const ImVec2 disp = ImGui::GetIO().DisplaySize;
+        const Vec4 c = (lastProj * lastView) * Vec4(p.x, p.y, p.z, 1.0f);
+        if (c.w < 0.05f) return false;
+        out = ImVec2((c.x / c.w * 0.5f + 0.5f) * disp.x, (1.0f - (c.y / c.w * 0.5f + 0.5f)) * disp.y);
+        return true;
+    }
+
+    // Rings on the floor for the start pad and the goal, and the run's HUD (health, time, win/lose banner)
+    void drawGameUI() {
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        auto ring = [&](Entity e, float radius, ImU32 color, const char* label) {
+            const Vec3 c = world.get<Transform>(e).position;
+            const float pulse = 1.0f + 0.08f * std::sin((float)simTime * 3.0f);
+            ImVec2 prev;
+            bool havePrev = false;
+            for (int i = 0; i <= 40; i++) {
+                const float a = (float)i / 40.0f * 6.2831853f;
+                ImVec2 p;
+                const bool ok = worldToScreen({ c.x + std::cos(a) * radius * pulse, c.y + 0.012f, c.z + std::sin(a) * radius * pulse }, p);
+                if (ok && havePrev) dl->AddLine(prev, p, color, 3.0f);
+                prev = p; havePrev = ok;
+            }
+            ImVec2 mid;
+            if (worldToScreen({ c.x, c.y + 0.012f, c.z }, mid)) {
+                const ImVec2 sz = ImGui::CalcTextSize(label);
+                dl->AddText(ImVec2(mid.x - sz.x * 0.5f, mid.y - sz.y * 0.5f), color, label);
+            }
+        };
+        world.each<StartPad, Transform>([&](Entity e, StartPad& s, Transform&) { ring(e, s.radius, IM_COL32(90, 200, 255, 255), "START"); });
+        world.each<Goal, Transform>([&](Entity e, Goal& g, Transform&) { ring(e, g.radius, IM_COL32(255, 220, 70, 255), "GOAL"); });
+
+        if (!game.active || !runAI) return;
+        const ImVec2 disp = ImGui::GetIO().DisplaySize;
+        const Entity player = findPlayer(world);
+        ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, 10.0f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+        ImGui::SetNextWindowBgAlpha(0.7f);
+        ImGui::Begin("##hud", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                                       ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+        ImGui::Text("Reach the GOAL     Time %.1f s", game.time);
+        if (player != NULL_ENTITY && world.has<Health>(player)) {
+            const Health& h = world.get<Health>(player);
+            ImGui::ProgressBar(h.fraction(), ImVec2(220, 14), "");
+            ImGui::SameLine();
+            ImGui::Text("HP %.0f", h.current);
+        }
+        if (pathTool == PathTool::MovePlayer) ImGui::TextDisabled("Arrow keys or click the floor to move. Esc stops click-to-move.");
+        else if (game.phase == GameState::Playing) { if (ImGui::SmallButton("Click to move")) pathTool = PathTool::MovePlayer; }
+        ImGui::End();
+
+        if (game.phase != GameState::Playing) {
+            const bool won = game.phase == GameState::Won;
+            ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, disp.y * 0.4f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowBgAlpha(0.85f);
+            ImGui::Begin("##result", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove |
+                                              ImGuiWindowFlags_NoSavedSettings);
+            ImGui::SetWindowFontScale(2.0f);
+            ImGui::TextColored(won ? ImVec4(0.4f, 1.0f, 0.5f, 1) : ImVec4(1.0f, 0.4f, 0.35f, 1), won ? "GOAL REACHED!" : "CAUGHT!");
+            ImGui::SetWindowFontScale(1.0f);
+            ImGui::Text("%s in %.1f seconds", won ? "Finished" : "Lasted", game.time);
+            if (ImGui::Button("Play again")) restartRun();
+            ImGui::End();
+        }
+    }
+
+    // ---------- Placing actors (Step 8.1) ----------
+
+    enum class ActorKind { Agent, Guard, Player };
+
+    // Creates a walking cube (or imported model) standing with its feet at `feet`. Returns the entity, or NULL_ENTITY.
+    Entity spawnActor(ActorKind kind, const float feet[3], uint32_t meshId) {
+        if (world.size() >= (size_t)MAX_CUBES) return NULL_ENTITY;
+        if (meshId >= meshes.size() || meshId == 1) meshId = 0;                // not the floor
+        if (kind == ActorKind::Player) {                                       // only one player at a time
+            std::vector<Entity> old;
+            world.each<Player>([&](Entity o, Player&) { old.push_back(o); });
+            for (Entity o : old) world.remove<Player>(o);
+        }
+        const Aabb& bb = meshes[meshId].bounds;
+        const float height = std::max(bb.max.y - bb.min.y, 0.001f);
+        Transform t;
+        t.scale = (meshId == 0 ? 0.15f : 0.25f / height) * (kind == ActorKind::Player ? 4.0f / 3.0f : 1.0f);
+        AIAgent ag;
+        ag.footOffset = -bb.min.y * t.scale;
+        if (kind == ActorKind::Player) ag.moveSpeed = 0.8f;
+        t.position = { feet[0], feet[1] + ag.footOffset, feet[2] };
+        Entity e = world.create();
+        world.add<Transform>(e, t);
+        world.add<MeshRenderer>(e, MeshRenderer{ meshId, 0 });
+        world.add<AIAgent>(e, ag);
+        if (kind == ActorKind::Player) {
+            world.add<Name>(e, Name{ "Player" });
+            world.add<Player>(e, Player{});
+        } else {
+            world.add<Name>(e, Name{ (kind == ActorKind::Guard ? "Guard " : "Agent ") + std::to_string(++agentSerial) });
+            if (kind == ActorKind::Guard) {
+                AIBrain br;
+                br.patrol.push_back({ feet[0], feet[1], feet[2] });
+                world.add<AIBrain>(e, br);
+                world.add<Health>(e, Health{});
+            }
+        }
+        selected = e;
+        cubeCount = (int)world.size();
+        return e;
+    }
+
+    uint32_t placeMesh = 0;                                  // which mesh the Place tool uses
+    ActorKind placeKind = ActorKind::Guard;
+
+    void spawnAgentAtStart() {
+        if (!haveStart) { pathStatus = "Set a start point first (Set start, then click the navmesh)."; return; }
+        if (spawnActor(ActorKind::Agent, pathStart, 0) != NULL_ENTITY)
+            pathStatus = "Spawned an agent. Use Send to... on it, or click Set end to see a route.";
+    }
+    // ---------- AI debug view (Step 7.5) ----------
+
+    static ImU32 statusColor(int s) {
+        switch (s) {
+            case (int)BTStatus::Success: return IM_COL32(90, 220, 110, 255);
+            case (int)BTStatus::Failure: return IM_COL32(235, 90, 80, 255);
+            case (int)BTStatus::Running: return IM_COL32(255, 210, 60, 255);
+            default: return IM_COL32(130, 130, 130, 255);        // not visited this tick
+        }
+    }
+    static const char* statusText(int s) {
+        return s < 0 ? "-" : toString((BTStatus)s);
+    }
+
+    // Draws one node and its children, coloured by what each returned on the last tick
+    void drawTreeNode(const BTNode& n, const std::vector<int8_t>& trace, int depth) {
+        const int st = (size_t)n.id < trace.size() ? trace[(size_t)n.id] : -1;
+        const char* kind = n.kind == BTNode::Kind::Selector ? "Selector" : (n.kind == BTNode::Kind::Sequence ? "Sequence" : "Leaf");
+        ImGui::Indent(depth > 0 ? 14.0f : 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, statusColor(st));
+        ImGui::Text("%s %s  [%s]", kind, n.name.c_str(), statusText(st));
+        ImGui::PopStyleColor();
+        for (const auto& c : n.children) drawTreeNode(*c, trace, depth + 1);
+        ImGui::Unindent(depth > 0 ? 14.0f : 0.0f);
+    }
+
+    void buildAIDebugPanel() {
+        ImGui::Checkbox("Labels above agents", &showAILabels);
+        if (!runAI) ImGui::TextDisabled("AI is off (Navmesh > Run AI)");
+        const bool haveSel = selectionValid() && world.has<AIBrain>(selected);
+        if (haveSel) {
+            ImGui::TextDisabled("Tree for the selected agent (green ok, red failed, yellow running, grey not reached):");
+            drawTreeNode(combatTree.root(), world.get<AIBrain>(selected).trace, 0);
+        } else {
+            ImGui::TextDisabled("Select an agent with an AI Brain to see its tree.");
+        }
+        ImGui::Separator();
+        int count = 0;
+        if (ImGui::BeginTable("aiagents", 4, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
+            ImGui::TableSetupColumn("Agent");
+            ImGui::TableSetupColumn("Doing");
+            ImGui::TableSetupColumn("HP");
+            ImGui::TableSetupColumn("State");
+            ImGui::TableHeadersRow();
+            world.each<AIBrain>([&](Entity e, AIBrain& b) {
+                if (++count > 40) return;                         // keep the table short
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                const std::string label = (world.has<Name>(e) ? world.get<Name>(e).value : "Entity " + std::to_string(e)) + "##ai" + std::to_string(e);
+                if (ImGui::Selectable(label.c_str(), e == selected)) selected = e;
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(b.lastLeaf >= 0 && b.lastLeaf < combatTree.nodeCount() ? combatTree.node(b.lastLeaf).name.c_str() : "-");
+                ImGui::TableNextColumn();
+                if (world.has<Health>(e)) ImGui::Text("%.0f", world.get<Health>(e).current); else ImGui::TextUnformatted("-");
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(b.fleeing ? "hurt" : (b.chasing ? "sees player" : "calm"));
+            });
+            ImGui::EndTable();
+        }
+        if (count == 0) ImGui::TextDisabled("No agents have a brain yet.");
+    }
+
+    // Text and a health bar floating above every agent that has a brain, via ImGui's background draw list
+    void drawAIOverlay() {
+        if (!showAILabels || !runAI) return;
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        const ImVec2 disp = ImGui::GetIO().DisplaySize;
+        const Mat4 vp = lastProj * lastView;
+        world.each<AIBrain, Transform>([&](Entity e, AIBrain& b, Transform& t) {
+            if (b.lastLeaf < 0 || b.lastLeaf >= combatTree.nodeCount()) return;
+            float top = t.scale * 0.5f;                                   // fallback: unit-ish mesh
+            if (world.has<MeshRenderer>(e)) {
+                const uint32_t m = world.get<MeshRenderer>(e).meshId;
+                if (m < meshes.size()) top = meshes[m].bounds.max.y * t.scale;
+            }
+            Vec4 c = vp * Vec4(t.position.x, t.position.y + top + 0.06f, t.position.z, 1.0f);
+            if (c.w < 0.05f) return;                                      // behind the camera
+            const ImVec2 p((c.x / c.w * 0.5f + 0.5f) * disp.x, (1.0f - (c.y / c.w * 0.5f + 0.5f)) * disp.y);
+            if (p.x < -200 || p.y < -50 || p.x > disp.x + 200 || p.y > disp.y + 50) return;
+
+            const char* leafName = combatTree.node(b.lastLeaf).name.c_str();
+            const ImU32 col = b.fleeing ? IM_COL32(255, 120, 90, 255)
+                            : (b.pathOwner == AIBrain::OWNER_CHASE ? IM_COL32(255, 210, 60, 255) : IM_COL32(150, 230, 255, 255));
+            const ImVec2 sz = ImGui::CalcTextSize(leafName);
+            const ImVec2 tp(p.x - sz.x * 0.5f, p.y - sz.y - 8.0f);
+            dl->AddRectFilled(ImVec2(tp.x - 3, tp.y - 1), ImVec2(tp.x + sz.x + 3, tp.y + sz.y + 1), IM_COL32(0, 0, 0, 150), 3.0f);
+            dl->AddText(tp, col, leafName);
+            if (world.has<Health>(e)) {                                   // bar under the text
+                const float w = 40.0f, h = 4.0f, f = world.get<Health>(e).fraction();
+                const ImVec2 a(p.x - w * 0.5f, p.y - 6.0f);
+                dl->AddRectFilled(a, ImVec2(a.x + w, a.y + h), IM_COL32(0, 0, 0, 180));
+                dl->AddRectFilled(a, ImVec2(a.x + w * f, a.y + h), f < b.fleeBelow ? IM_COL32(235, 80, 70, 255) : IM_COL32(90, 220, 110, 255));
+            }
+        });
+    }
+
+    void spawnPlayerAtStart() {
+        if (!haveStart) { pathStatus = "Set a start point first (Set start, then click the navmesh)."; return; }
+        if (spawnActor(ActorKind::Player, pathStart, 0) != NULL_ENTITY)
+            pathStatus = "Spawned the player. Use Send to... to walk it, or drag it with the gizmo.";
+    }
+    // A guard that patrols between the start and end markers (whichever are set)
+    void spawnGuardAtStart() {
+        if (!haveStart) { pathStatus = "Set a start point first (Set start, then click the navmesh)."; return; }
+        Entity e = spawnActor(ActorKind::Guard, pathStart, 0);
+        if (e == NULL_ENTITY) return;
+        if (haveEnd) world.get<AIBrain>(e).patrol.push_back({ pathEnd[0], pathEnd[1], pathEnd[2] });
+        pathStatus = "Spawned a guard. It patrols the start/end markers, chases the player when close, and flees when hurt.";
+    }
+    // Sends the selected agent to a point: finds a path from where its feet are now and hands it over
+    void sendAgentTo(const float target[3], Entity who) {
+        if (who == NULL_ENTITY || !world.has<AIAgent>(who) || !world.has<Transform>(who)) {
+            pathStatus = "Select an AI agent first.";
+            return;
+        }
+        AIAgent& ag = world.get<AIAgent>(who);
+        const Vec3& p = world.get<Transform>(who).position;
+        const float feet[3] = { p.x, p.y - ag.footOffset, p.z };
+        NavPath path;
+        std::string error;
+        if (!navMesh.findPath(feet, target, path, error)) { pathStatus = "No path for the agent: " + error; return; }
+        std::vector<Vec3> corners;
+        for (size_t i = 0; i < path.count(); i++) corners.push_back({ path.point(i)[0], path.point(i)[1], path.point(i)[2] });
+        ag.setPath(std::move(corners));
+        pathStatus = std::string("Agent is walking ") + std::to_string(path.count()) + " waypoints" + (path.partial ? " (goal unreachable: stopping at the closest point)" : "");
+    }
+
+    // The path tool is armed: a left click places a point on the navmesh under the cursor
+    void handlePathClick(bool clicked) {
+        if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) pathTool = PathTool::Off;
+        if (!clicked || looking || !havePickMatrix) return;
+        if (imguiEnabled && ImGui::GetIO().WantCaptureMouse) return;
+        if (!navMesh.valid()) { pathStatus = "Build the navmesh first."; pathTool = PathTool::Off; return; }
+
+        double mx, my;
+        glfwGetCursorPos(window, &mx, &my);
+        int winW, winH;
+        glfwGetWindowSize(window, &winW, &winH);
+        Ray ray = screenToRay(pickInvViewProj, (float)mx, (float)my, (float)winW, (float)winH);
+        const float o[3] = { ray.origin.x, ray.origin.y, ray.origin.z }, d[3] = { ray.dir.x, ray.dir.y, ray.dir.z };
+        float t = 0.0f;
+        if (!navMesh.raycast(o, d, t)) { pathStatus = "That click did not hit the navmesh."; return; }
+        const float hit[3] = { o[0] + d[0] * t, o[1] + d[1] * t, o[2] + d[2] * t };
+        if (pathTool == PathTool::SendAgent) { sendAgentTo(hit, selectionValid() ? selected : NULL_ENTITY); pathTool = PathTool::Off; return; }
+        if (pathTool == PathTool::MovePlayer) {          // stays armed: click again to redirect the player
+            if (game.phase == GameState::Playing) sendAgentTo(hit, findPlayer(world));
+            return;
+        }
+        if (pathTool == PathTool::Place) {               // stays armed (except for the player) so several can be placed
+            spawnActor(placeKind, hit, placeMesh);
+            if (placeKind == ActorKind::Player) pathTool = PathTool::Off;
+            return;
+        }
+        if (pathTool == PathTool::AddPatrol) {          // stay armed so several points can be placed in a row
+            if (selectionValid() && world.has<AIBrain>(selected)) world.get<AIBrain>(selected).patrol.push_back({ hit[0], hit[1], hit[2] });
+            else pathTool = PathTool::Off;
+            return;
+        }
+        float* target = pathTool == PathTool::SetStart ? pathStart : pathEnd;
+        target[0] = hit[0]; target[1] = hit[1]; target[2] = hit[2];
+        if (pathTool == PathTool::SetStart) { haveStart = true; pathTool = haveEnd ? PathTool::Off : PathTool::SetEnd; }
+        else { haveEnd = true; pathTool = PathTool::Off; }
+        computePath();
+    }
+
+    // Draws the navmesh over the scene with ImGui's background draw list (so it reuses the debug overlay and
+    // needs no extra Vulkan pipeline). It has no depth test: the mesh shows through objects, which is what you
+    // want for checking it, but it does mean it can't be hidden behind a wall.
+    void drawNavmeshOverlay() {
+        if (!navMesh.valid()) return;
+        ImDrawList* dl = ImGui::GetBackgroundDrawList();
+        const ImVec2 disp = ImGui::GetIO().DisplaySize;
+        const Mat4 vp = lastProj * lastView;
+        const float lift = 0.01f;                    // draw slightly above the surface so it doesn't sink into the floor
+
+        struct Clip { float x, y, z, w; };
+        auto toClip = [&](const float* p) {
+            Vec4 c = vp * Vec4(p[0], p[1] + lift, p[2], 1.0f);
+            return Clip{ c.x, c.y, c.z, c.w };
+        };
+        auto toScreen = [&](const Clip& c) {
+            return ImVec2((c.x / c.w * 0.5f + 0.5f) * disp.x, (1.0f - (c.y / c.w * 0.5f + 0.5f)) * disp.y);
+        };
+        const float nearW = 0.05f;                   // clip against this w: anything closer is behind or beside the camera
+        auto lerp = [](const Clip& a, const Clip& b, float t) {
+            return Clip{ a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t };
+        };
+
+        if (showNavmesh) {
+        const ImDrawListFlags oldFlags = dl->Flags;
+        dl->Flags &= ~ImDrawListFlags_AntiAliasedFill;      // anti-aliased edges would show seams between triangles
+
+        for (const NavDebugTri& t : navMesh.debugTriangles()) {
+            Clip in[3] = { toClip(t.a), toClip(t.b), toClip(t.c) };
+            Clip poly[4];
+            int n = 0;
+            for (int i = 0; i < 3; i++) {            // Sutherland-Hodgman against the near plane
+                const Clip& cur = in[i];
+                const Clip& nxt = in[(i + 1) % 3];
+                const bool curIn = cur.w >= nearW, nxtIn = nxt.w >= nearW;
+                if (curIn) poly[n++] = cur;
+                if (curIn != nxtIn) poly[n++] = lerp(cur, nxt, (nearW - cur.w) / (nxt.w - cur.w));
+            }
+            if (n < 3) continue;
+            ImVec2 pts[4];
+            for (int i = 0; i < n; i++) pts[i] = toScreen(poly[i]);
+            // A stable colour per polygon, so the polygon structure is visible
+            float hue = (float)((t.poly * 2654435761u) >> 8 & 0xFFFF) / 65535.0f;
+            float r, g, b;
+            ImGui::ColorConvertHSVtoRGB(hue, 0.55f, 0.95f, r, g, b);
+            dl->AddConvexPolyFilled(pts, n, ImGui::ColorConvertFloat4ToU32(ImVec4(r, g, b, 0.30f)));
+        }
+        dl->Flags = oldFlags;
+
+        for (const NavDebugEdge& e : navMesh.debugEdges()) {
+            Clip a = toClip(e.a), b = toClip(e.b);
+            if (a.w < nearW && b.w < nearW) continue;
+            if (a.w < nearW) a = lerp(a, b, (nearW - a.w) / (b.w - a.w));
+            else if (b.w < nearW) b = lerp(b, a, (nearW - b.w) / (a.w - b.w));
+            dl->AddLine(toScreen(a), toScreen(b),
+                        e.border ? IM_COL32(60, 255, 120, 235) : IM_COL32(255, 255, 255, 70), e.border ? 2.0f : 1.0f);
+        }
+        }   // showNavmesh
+
+        // The path: a thick line strip through the waypoints, a dot at each corner, and the two end markers
+        auto drawLine = [&](const float* p, const float* q, ImU32 color, float thickness) {
+            Clip a = toClip(p), b = toClip(q);
+            if (a.w < nearW && b.w < nearW) return;
+            if (a.w < nearW) a = lerp(a, b, (nearW - a.w) / (b.w - a.w));
+            else if (b.w < nearW) b = lerp(b, a, (nearW - b.w) / (a.w - b.w));
+            dl->AddLine(toScreen(a), toScreen(b), color, thickness);
+        };
+        auto marker = [&](const float* p, ImU32 color, float radius) {
+            Clip c = toClip(p);
+            if (c.w < nearW) return;
+            dl->AddCircleFilled(toScreen(c), radius, color);
+            dl->AddCircle(toScreen(c), radius, IM_COL32(0, 0, 0, 255), 0, 2.0f);
+        };
+        for (size_t i = 0; i + 1 < navPath.count(); i++)
+            drawLine(navPath.point(i), navPath.point(i + 1), IM_COL32(255, 215, 40, 255), 3.5f);
+        for (size_t i = 1; i + 1 < navPath.count(); i++) marker(navPath.point(i), IM_COL32(255, 255, 255, 255), 3.5f);
+        if (showAgentPaths) {
+            world.each<AIAgent, Transform>([&](Entity e, AIAgent& ag, Transform& t) {
+                if (!ag.walking()) return;
+                const ImU32 color = e == selected ? IM_COL32(80, 220, 255, 255) : IM_COL32(80, 160, 220, 190);
+                float from[3] = { t.position.x, t.position.y - ag.footOffset, t.position.z };
+                for (size_t i = ag.waypoint; i < ag.path.size(); i++) {
+                    const float to[3] = { ag.path[i].x, ag.path[i].y, ag.path[i].z };
+                    drawLine(from, to, color, 2.0f);
+                    from[0] = to[0]; from[1] = to[1]; from[2] = to[2];
+                }
+                const Vec3& goal = ag.path.back();
+                const float g[3] = { goal.x, goal.y, goal.z };
+                marker(g, color, 4.5f);
+            });
+        }
+        if (selectionValid() && world.has<AIBrain>(selected)) {      // the selected brain's patrol loop, numbered
+            const auto& pts = world.get<AIBrain>(selected).patrol;
+            for (size_t i = 0; i < pts.size(); i++) {
+                const float a[3] = { pts[i].x, pts[i].y, pts[i].z };
+                const Vec3& nx = pts[(i + 1) % pts.size()];
+                const float b2[3] = { nx.x, nx.y, nx.z };
+                if (pts.size() > 1) drawLine(a, b2, IM_COL32(255, 160, 40, 170), 1.5f);
+                marker(a, IM_COL32(255, 160, 40, 255), 5.0f);
+            }
+        }
+        if (haveStart) marker(pathStart, IM_COL32(60, 220, 90, 255), 8.0f);
+        if (haveEnd) marker(pathEnd, IM_COL32(235, 70, 60, 255), 8.0f);
     }
 
     // ---------- Hot reload (Step 6.4) ----------
@@ -2130,6 +2942,7 @@ private:
 
         world = std::move(fresh);
         selected = NULL_ENTITY;
+        game = GameState{};
         gizmoActive = false;
         demoScene = false;
         cam = newCam;
@@ -2178,6 +2991,12 @@ private:
         double t0 = glfwGetTime();
         spinSystem(world, dt);
         bobSystem(world, simTime);
+        // Once a run is won or lost, the agents freeze (the decorations keep spinning)
+        const float aiDt = (runAI && game.phase != GameState::Playing) ? 0.0f : dt;
+        if (runAI) { healthSystem(world, aiDt); behaviorSystem(world, aiDt, combatTree, navPathFn); }
+        pathFollowSystem(world, aiDt);
+        if (runAI) playerKeyboardMove(aiDt);
+        if (runAI) updateGame(world, game, dt);
         double t1 = glfwGetTime();
         buildDrawList(world, drawList, selected);
         drawnCubes = (uint32_t)drawList.size();
@@ -2389,7 +3208,9 @@ private:
     }
 
     // A material = a descriptor set pointing at one texture. Returns its index (0, the default, if the pool is full).
-    uint32_t createMaterial(uint32_t textureIndex) {
+    uint32_t createMaterial(uint32_t textureIndex) { return createMaterial(textureIndex, MaterialProps{}); }
+
+    uint32_t createMaterial(uint32_t textureIndex, const MaterialProps& props) {
         if (materialSets.size() >= MAX_MATERIALS) return 0;
         VkDescriptorSetAllocateInfo alloc{};
         alloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -2410,6 +3231,7 @@ private:
         vkUpdateDescriptorSets(device, 1, &w, 0, nullptr);
         materialSets.push_back(set);
         materialTexture.push_back(textureIndex);
+        materialProps.push_back(props);
         return (uint32_t)materialSets.size() - 1;
     }
 
